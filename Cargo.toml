@@ -19,6 +19,11 @@ orgize = { package = "orgize-ng", version = "=0.10.0-alpha.12" }
 unicode-segmentation = "1.12"
 anyhow = "1"
 
+# Lockfile pins (no manifest entry needed, but don't `cargo update` past them blindly):
+# - libc 0.2.189 / mio 1.2.4: libc 0.2.190 removed `ENOATTR` on Linux, which breaks
+#   xattr 0.2.3 (gpui 0.2.2 → gpui_http_client → zed-async-tar). Lift once gpui stops
+#   depending on xattr 0.2. Verify with a Linux build after any `cargo update`.
+
 [profile.dev.package."*"]
 # Keep dependencies (GPUI especially) reasonably fast in debug builds.
 opt-level = 2

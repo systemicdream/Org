@@ -238,6 +238,7 @@ Phases 2–4 are where most of the effort lands.
 - [x] Assemble round-trip test corpus (`crates/aster-org/tests/corpus`)
 - [x] Spike: `orgize` round-trip + incremental reparse; decide parser strategy ([0001](decisions/0001-org-parser.md))
 - [x] Record decisions in `docs/decisions/` (lightweight ADRs)
+- [x] Linux build verified locally (Nobara 44 / Fedora: fmt, clippy `-D warnings`, tests, build)
 - [ ] Verify CI green on all three OSes (first push)
 - [ ] Manually test IME (Japanese/Chinese input, dead keys, emoji palette) on each OS
 
