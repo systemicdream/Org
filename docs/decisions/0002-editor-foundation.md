@@ -11,7 +11,7 @@ The editor is the product. Options: build on GPUI primitives (`Element`, `Shaped
 
 ## Findings
 
-The spike in `crates/aster-editor` (~800 lines) implements, on raw GPUI 0.2.2:
+The spike in `crates/aster-editor` (~1,000 lines) implements, on raw GPUI 0.2.2:
 multi-line layout, cursor and keyboard/mouse selection, vertical movement with goal column,
 clipboard, CRLF-preserving newlines, IME (marked text, character palette, candidate-window
 bounds), auto-scroll to cursor, and styling driven by the Org syntax tree.
