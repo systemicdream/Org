@@ -70,6 +70,7 @@ fidelity and the optional Emacs keymap, but we don't design the UX around them.
 - Clocking, column view, table formulas (render formulas, don't evaluate)
 - Built-in sync
 - Mobile (GPUI is desktop-only)
+- Windows, for now: target macOS and Linux first; GPUI supports Windows, so it can be added later
 
 ### Future candidates
 
@@ -122,8 +123,8 @@ aster-app ──► aster-editor ──► aster-doc ──► aster-org
 | File watching | `notify` | Reload clean buffers; conflict UI for dirty buffers. |
 | Dates | `jiff` or `chrono` | Repeaters, agenda ranges, time zones. |
 | Settings / state | `serde` + TOML/JSON in platform config dir | Edited through the settings UI. |
-| Packaging | `cargo-packager` | `.dmg` (signed + notarized), `.msi`, AppImage/`.deb`/Flatpak. |
-| CI | GitHub Actions on macOS, Windows, Linux | From week one. |
+| Packaging | `cargo-packager` | `.dmg` (signed + notarized), AppImage/`.deb`/Flatpak; `.msi` once Windows is picked up. |
+| CI | GitHub Actions on macOS and Linux | From week one. Windows added when it is picked up. |
 
 ---
 
@@ -216,7 +217,7 @@ Because users pick their own sync tool, Aster must be robust to external changes
 
 | Phase | Goal | Exit criteria |
 |---|---|---|
-| **0. Spikes** | Retire the big unknowns | GPUI window builds/runs on all three OSes in CI. Minimal multi-line text view with IME + selection. `orgize` round-trips the corpus byte-for-byte (or decision to write our own parser). |
+| **0. Spikes** | Retire the big unknowns | GPUI window builds/runs on macOS and Linux in CI. Minimal multi-line text view with IME + selection. `orgize` round-trips the corpus byte-for-byte (or decision to write our own parser). |
 | **1. Core** | `aster-org`, `aster-doc` | Parser, serializer, transactions, undo, structural ops — all tested headless. |
 | **2. Editor MVP** | Edit one file well | Open/save/autosave, styled source, folding, selection, clipboard, find/replace, soft wrap. |
 | **3. Live preview** | The modern feel | Hidden markup with cursor reveal, checkboxes, link chips, tables, src highlighting, images. |
@@ -231,7 +232,7 @@ Phases 2–4 are where most of the effort lands.
 ### Phase 0 task list
 
 - [x] Set up Cargo workspace (`aster-org`, `aster-editor`, `aster-app`; other crates are added in the phase that needs them)
-- [x] CI: fmt, clippy, test, build on macOS, Windows, Linux (`.github/workflows/ci.yml`)
+- [x] CI: fmt, clippy, test, build on macOS and Linux (`.github/workflows/ci.yml`)
 - [x] GPUI window with app menu, keybindings, open/save a file (atomic writes)
 - [x] Spike: multi-line text element with cursor, selection, IME via `EntityInputHandler`
 - [x] Evaluate `gpui-component` editor vs. raw GPUI → raw GPUI ([0002](decisions/0002-editor-foundation.md))
@@ -239,7 +240,7 @@ Phases 2–4 are where most of the effort lands.
 - [x] Spike: `orgize` round-trip + incremental reparse; decide parser strategy ([0001](decisions/0001-org-parser.md))
 - [x] Record decisions in `docs/decisions/` (lightweight ADRs)
 - [x] Linux build verified locally (Nobara 44 / Fedora: fmt, clippy `-D warnings`, tests, build)
-- [ ] Verify CI green on all three OSes (first push)
+- [ ] Verify CI green on macOS and Linux (first push)
 - [ ] Manually test IME (Japanese/Chinese input, dead keys, emoji palette) on each OS
 
 ---

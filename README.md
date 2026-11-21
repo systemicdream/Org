@@ -28,6 +28,6 @@ Platform notes:
   separate Metal toolchain is not required.
 - **Linux:** `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
   libfontconfig-dev libfreetype-dev libvulkan-dev pkg-config` (Debian/Ubuntu names).
-- **Windows:** Visual Studio Build Tools with the Windows SDK.
+- **Windows:** not supported yet (deferred; GPUI supports it, so it can be added later).
 
 Keys: platform-standard editing shortcuts; Cmd/Ctrl+S saves (atomic write), Cmd/Ctrl+Q quits.
