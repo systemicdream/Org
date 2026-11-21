@@ -1,0 +1,15 @@
+* Lists
+1. First
+2. Second
+   a. nested alpha
+   b. second alpha
+3) Third with paren
+- term :: description
+- another term :: more
++ plus bullet
+  continued paragraph in item
+
+  second paragraph in item
+- [-] partial
+  - [X] done
+  - [ ] not done

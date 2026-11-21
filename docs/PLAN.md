@@ -230,14 +230,16 @@ Phases 2–4 are where most of the effort lands.
 
 ### Phase 0 task list
 
-- [ ] Set up Cargo workspace with the crate skeleton above
-- [ ] CI: build + test on macOS, Windows, Linux
-- [ ] GPUI hello window with app menu and a keybinding
-- [ ] Spike: multi-line text element with cursor, selection, IME via `EntityInputHandler`
-- [ ] Spike: evaluate `gpui-component` editor/input as a base or reference
-- [ ] Assemble round-trip test corpus
-- [ ] Spike: `orgize` round-trip + incremental reparse feasibility; decide parser strategy
-- [ ] Record decisions in `docs/decisions/` (lightweight ADRs)
+- [x] Set up Cargo workspace (`aster-org`, `aster-editor`, `aster-app`; other crates are added in the phase that needs them)
+- [x] CI: fmt, clippy, test, build on macOS, Windows, Linux (`.github/workflows/ci.yml`)
+- [x] GPUI window with app menu, keybindings, open/save a file (atomic writes)
+- [x] Spike: multi-line text element with cursor, selection, IME via `EntityInputHandler`
+- [x] Evaluate `gpui-component` editor vs. raw GPUI → raw GPUI ([0002](decisions/0002-editor-foundation.md))
+- [x] Assemble round-trip test corpus (`crates/aster-org/tests/corpus`)
+- [x] Spike: `orgize` round-trip + incremental reparse; decide parser strategy ([0001](decisions/0001-org-parser.md))
+- [x] Record decisions in `docs/decisions/` (lightweight ADRs)
+- [ ] Verify CI green on all three OSes (first push)
+- [ ] Manually test IME (Japanese/Chinese input, dead keys, emoji palette) on each OS
 
 ---
 
@@ -258,7 +260,7 @@ Phases 2–4 are where most of the effort lands.
 
 ## 11. Open questions
 
-- Own parser vs. `orgize` — decided at end of Phase 0.
-- Build editor from scratch on GPUI primitives vs. extend `gpui-component`'s editor.
+- ~~Own parser vs. `orgize`~~ — `orgize-ng` with full reparse ([0001](decisions/0001-org-parser.md)).
+- ~~Editor from scratch vs. `gpui-component`~~ — raw GPUI ([0002](decisions/0002-editor-foundation.md)).
 - Default outlining shortcuts: does Tab fold or demote? (User-test with newcomers.)
 - Licensing of bundled fonts/icons; app icon and visual identity.

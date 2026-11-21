@@ -1,0 +1,29 @@
+#+TITLE: Basics
+#+AUTHOR: Aster
+#+TODO: TODO NEXT WAITING | DONE CANCELLED
+#+FILETAGS: :notes:
+#+STARTUP: overview
+
+Some intro text with *bold*, /italic/, _underline_, =verbatim=, ~code~ and +strike+.
+A link: [[https://orgmode.org][Org mode]] and a bare https://example.com link.
+Internal link: [[*Projects][Projects]], id link: [[id:4f1c2d3e-0000-4000-8000-000000000001][Note]].
+
+* Projects                                                            :work:
+** TODO [#A] Write the plan                                     :aster:urgent:
+   SCHEDULED: <2026-11-21 Sat> DEADLINE: <2026-12-01 Mon -3d>
+   :PROPERTIES:
+   :ID:       4f1c2d3e-0000-4000-8000-000000000001
+   :EFFORT:   2:00
+   :END:
+   - [X] Draft scope
+   - [ ] Pick parser [1/2]
+     - [X] orgize
+     - [ ] hand-written
+** NEXT Recurring review
+   SCHEDULED: <2026-11-23 Mon +1w>
+** DONE Old task
+   CLOSED: [2026-11-01 Sun 10:12]
+** WAITING On someone :blocked:
+* COMMENT Hidden section
+Nothing here.
+* Archive                                                          :ARCHIVE:

@@ -1,0 +1,15 @@
+[package]
+name = "aster-app"
+description = "Aster: a modern Org mode notes app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aster"
+path = "src/main.rs"
+
+[dependencies]
+aster-editor.workspace = true
+gpui.workspace = true
+anyhow.workspace = true

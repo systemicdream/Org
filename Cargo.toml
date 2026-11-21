@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+aster-org = { path = "crates/aster-org" }
+aster-editor = { path = "crates/aster-editor" }
+
+# GPUI moves fast; pin exactly and upgrade deliberately.
+# `runtime_shaders`: compile Metal shaders at launch instead of needing the Metal toolchain
+# (`xcodebuild -downloadComponent MetalToolchain`) at build time. Revisit for release builds.
+gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+orgize = { package = "orgize-ng", version = "=0.10.0-alpha.12" }
+unicode-segmentation = "1.12"
+anyhow = "1"
+
+[profile.dev.package."*"]
+# Keep dependencies (GPUI especially) reasonably fast in debug builds.
+opt-level = 2

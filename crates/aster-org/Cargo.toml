@@ -1,0 +1,9 @@
+[package]
+name = "aster-org"
+description = "Org mode parsing, lossless syntax tree, and serialization for Aster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+orgize.workspace = true

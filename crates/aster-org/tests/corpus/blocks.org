@@ -1,0 +1,43 @@
+* Blocks
+#+BEGIN_SRC rust :results silent
+fn main() {
+    println!("* not a heading");
+}
+#+END_SRC
+
+#+begin_quote
+A quote with *markup*.
+#+end_quote
+
+#+BEGIN_EXAMPLE
+  | not | a | table |
+#+END_EXAMPLE
+
+: fixed width line
+: another one
+
+#+NAME: tbl
+| Name  | Qty | Price |
+|-------+-----+-------|
+| Apple |   3 |  1.20 |
+| Pear  |  10 |  0.50 |
+#+TBLFM: $3=$2*0.4
+
+Footnote reference[fn:1] and inline[fn:: inline note].
+
+[fn:1] The footnote text.
+
+#+begin_center
+centered
+#+end_center
+
+-----
+
+\begin{equation}
+x = y^2
+\end{equation}
+
+# a comment line
+#+begin_comment
+block comment
+#+end_comment

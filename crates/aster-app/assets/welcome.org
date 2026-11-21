@@ -1,0 +1,22 @@
+#+TITLE: Welcome to Aster
+#+TODO: TODO NEXT | DONE
+
+This is a plain Org file. Everything you see is ordinary text that any Org tool can read.
+
+* Headings start with stars
+Each extra star nests one level deeper.
+** Like this
+*** And this
+
+* TODO Things to do have a keyword                                    :tasks:
+Type TODO or DONE right after the stars.
+** DONE Finished items turn green
+** NEXT [#A] Priorities look like [#A]                                :urgent:
+
+* Notes
+- Lists start with a dash
+- [ ] Checkboxes look like this
+- [X] And this when done
+
+Try typing `* ` at the start of a line to make a new heading.
+Unicode works too: 日本語, Ελληνικά, emoji 🎉.
