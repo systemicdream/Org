@@ -1,0 +1,11 @@
+[package]
+name = "aster-editor"
+description = "GPUI editor view for Org documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aster-org.workspace = true
+gpui.workspace = true
+unicode-segmentation.workspace = true

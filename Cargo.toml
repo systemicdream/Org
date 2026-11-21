@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+aster-org = { path = "crates/aster-org" }
+aster-editor = { path = "crates/aster-editor" }
+
+# GPUI moves fast; pin exactly and upgrade deliberately.
+# Features:
+# - default features off: drops the X11 backend. On Linux, Aster targets Wayland only.
+# - `font-kit`: font loading (macOS and Linux). `wayland`: the Linux backend.
+# - `runtime_shaders`: compile Metal shaders at launch instead of needing the Metal toolchain
+#   (`xcodebuild -downloadComponent MetalToolchain`) at build time. Revisit for release builds.
+gpui = { version = "=0.2.2", default-features = false, features = [
+    "font-kit",
+    "wayland",
+    "runtime_shaders",
+] }
+orgize = { package = "orgize-ng", version = "=0.10.0-alpha.12" }
+unicode-segmentation = "1.12"
+anyhow = "1"
+
+# Lockfile pins (no manifest entry needed, but don't `cargo update` past them blindly):
+# - libc 0.2.189 / mio 1.2.4: libc 0.2.190 removed `ENOATTR` on Linux, which breaks
+#   xattr 0.2.3 (gpui 0.2.2 → gpui_http_client → zed-async-tar). Lift once gpui stops
+#   depending on xattr 0.2. Verify with a Linux build after any `cargo update`.
+
+[profile.dev.package."*"]
+# Keep dependencies (GPUI especially) reasonably fast in debug builds.
+opt-level = 2
