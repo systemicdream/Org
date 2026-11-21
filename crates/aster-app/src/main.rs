@@ -76,6 +76,16 @@ impl Render for Workspace {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Aster's Linux build only includes GPUI's Wayland backend. Without a Wayland session GPUI
+    // would fall back to a headless platform and fail obscurely, so stop with a clear message.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_none_or(|d| d.is_empty()) {
+        anyhow::bail!(
+            "Aster requires a Wayland session on Linux (WAYLAND_DISPLAY is not set). \
+             X11 is not supported."
+        );
+    }
+
     let path = std::env::args_os().nth(1).map(PathBuf::from);
     let text = match &path {
         Some(p) if p.exists() => {

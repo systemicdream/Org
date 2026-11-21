@@ -71,6 +71,7 @@ fidelity and the optional Emacs keymap, but we don't design the UX around them.
 - Built-in sync
 - Mobile (GPUI is desktop-only)
 - Windows, for now: target macOS and Linux first; GPUI supports Windows, so it can be added later
+- X11: Linux support is Wayland-only (GPUI's X11 backend is compiled out)
 
 ### Future candidates
 
@@ -255,7 +256,7 @@ Phases 2–4 are where most of the effort lands.
 | Parser fidelity | Lossless tree; corpus tests in CI; never drop unknown syntax. |
 | Accessibility gaps in GPUI | Track upstream; keep semantic structure available; full keyboard operability. |
 | Sync-induced corruption/conflicts | Atomic writes, file watching, conflict UI, conflict-file detection. |
-| Linux platform variance (Wayland/X11, fonts) | Test both in CI/VMs; Flatpak for consistent runtime. |
+| Linux platform variance (compositors, fonts, IME) | Wayland only; test KDE and GNOME; Flatpak for consistent runtime. |
 | Scope creep toward "all of Org" | Hold the scope table in §3; new features go to "Future candidates" first. |
 
 ---

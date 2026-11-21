@@ -12,9 +12,16 @@ aster-org = { path = "crates/aster-org" }
 aster-editor = { path = "crates/aster-editor" }
 
 # GPUI moves fast; pin exactly and upgrade deliberately.
-# `runtime_shaders`: compile Metal shaders at launch instead of needing the Metal toolchain
-# (`xcodebuild -downloadComponent MetalToolchain`) at build time. Revisit for release builds.
-gpui = { version = "=0.2.2", features = ["runtime_shaders"] }
+# Features:
+# - default features off: drops the X11 backend. On Linux, Aster targets Wayland only.
+# - `font-kit`: font loading (macOS and Linux). `wayland`: the Linux backend.
+# - `runtime_shaders`: compile Metal shaders at launch instead of needing the Metal toolchain
+#   (`xcodebuild -downloadComponent MetalToolchain`) at build time. Revisit for release builds.
+gpui = { version = "=0.2.2", default-features = false, features = [
+    "font-kit",
+    "wayland",
+    "runtime_shaders",
+] }
 orgize = { package = "orgize-ng", version = "=0.10.0-alpha.12" }
 unicode-segmentation = "1.12"
 anyhow = "1"
