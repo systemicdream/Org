@@ -26,9 +26,11 @@ Platform notes:
 
 - **macOS:** Xcode command line tools. Shaders compile at launch (`runtime_shaders`), so the
   separate Metal toolchain is not required.
-- **Linux:** Wayland only (X11 is not supported). Build deps: `libxkbcommon-dev libwayland-dev
-  libfontconfig-dev libfreetype-dev libvulkan-dev pkg-config` (Debian/Ubuntu names;
-  on Fedora: `libxkbcommon-devel wayland-devel fontconfig-devel freetype-devel vulkan-loader-devel`).
+- **Linux:** Wayland only (X11 is not supported). Build deps: `libxkbcommon-dev libxkbcommon-x11-dev
+  libwayland-dev libfontconfig-dev libfreetype-dev libvulkan-dev pkg-config` (Debian/Ubuntu names;
+  on Fedora: `libxkbcommon-devel libxkbcommon-x11-devel wayland-devel fontconfig-devel
+  freetype-devel vulkan-loader-devel`). `libxkbcommon-x11` is only a link-time requirement
+  of gpui; the app does not use X11.
 - **Windows:** not supported yet (deferred; GPUI supports it, so it can be added later).
 
 Keys: platform-standard editing shortcuts; Cmd/Ctrl+S saves (atomic write), Cmd/Ctrl+Q quits.
