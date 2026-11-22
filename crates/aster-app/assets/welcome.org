@@ -1,22 +1,43 @@
 #+TITLE: Welcome to Aster
 #+TODO: TODO NEXT | DONE
 
-This is a plain Org file. Everything you see is ordinary text that any Org tool can read.
+This is a plain Org file: everything here is ordinary text that any Org tool can read.
+Aster hides the markup while you read and shows it again where your cursor is.
+Click into the *bold* word below to see how it works.
 
 * Headings start with stars
-Each extra star nests one level deeper.
+Each extra star nests one level deeper. Aster hides the stars and indents instead.
 ** Like this
 *** And this
 
 * TODO Things to do have a keyword                                    :tasks:
-Type TODO or DONE right after the stars.
+Type TODO or DONE right after the stars, or press Cmd/Ctrl+Enter on the heading.
 ** DONE Finished items turn green
 ** NEXT [#A] Priorities look like [#A]                                :urgent:
 
-* Notes
+* Writing
+Make text *bold*, /italic/, _underlined_, +struck through+, =verbatim= or ~code~.
+Links look like [[https://orgmode.org][this]]; Cmd/Ctrl+click to open one.
+Dates look like <2026-11-23 Mon>.
+
 - Lists start with a dash
-- [ ] Checkboxes look like this
-- [X] And this when done
+- [ ] Click a checkbox to tick it
+- [X] Like this one
+
+| Fruit | Qty |
+|-------+-----|
+| Apple |   3 |
+| Pear  |  12 |
+Press Tab inside a table to line it up and move to the next cell.
+
+#+begin_src python
+def hello(name):
+    return f"Hello, {name}!"
+#+end_src
+
+#+begin_quote
+Quotes get a bar on the left.
+#+end_quote
 
 * Shortcuts to try
 (Cmd on macOS, Ctrl on Linux)
@@ -24,7 +45,9 @@ Type TODO or DONE right after the stars.
 - Alt+Enter :: new heading below this one
 - Tab / Shift+Tab on a heading :: nest it deeper / bring it back out (children follow)
 - Alt+Up / Alt+Down :: move a heading and everything under it
+- Click the arrow left of a heading :: fold or unfold it
+- Cmd/Ctrl+F :: find
 - Cmd/Ctrl+Z :: undo, Cmd/Ctrl+Shift+Z :: redo
 
-Try typing `* ` at the start of a line to make a new heading.
+Try typing ~* ~ at the start of a line to make a new heading.
 Unicode works too: 日本語, Ελληνικά, emoji 🎉.

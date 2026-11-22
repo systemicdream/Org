@@ -55,6 +55,16 @@ Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
 | Cmd/Ctrl+G, Cmd/Ctrl+Shift+G | Next, previous match |
 | Cmd/Ctrl+O, Cmd/Ctrl+S, Cmd/Ctrl+Shift+S | Open, save, save as |
 | Cmd/Ctrl+Q | Quit |
+| Click a checkbox | Tick / untick it |
+| Cmd/Ctrl+click a link | Follow it (headings and `id:` in the file; web links, files) |
+| Tab, Shift+Tab (in a table) | Align the table and move to the next / previous cell |
 
 Files save automatically one second after you stop typing (atomic write), and on quit.
 A file with `#+STARTUP: overview` opens with every heading folded.
+
+## Live preview
+
+Aster shows Org markup formatted — `*bold*` as **bold**, `[[url][text]]` as a link, `- [ ]` as a
+checkbox — and reveals the raw text only where the cursor is, so the file stays plain Org.
+Code blocks are syntax highlighted, tables are set in a monospace font, and a line holding only
+an image link (`[[file:photo.png]]`) shows the image.

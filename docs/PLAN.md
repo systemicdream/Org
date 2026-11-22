@@ -272,6 +272,25 @@ Phases 2–4 are where most of the effort lands.
 Deferred: error messages in the UI (currently stderr), reloading files changed on disk (Phase 5),
 `#+STARTUP: content`, remembering folds between sessions, rope storage (ADR 0003).
 
+
+### Phase 3 task list
+
+- [x] Decorations from the syntax tree (`aster-org`) and a tested buffer↔display offset map (`aster-doc`)
+- [x] Hide markup unless the cursor is in it: emphasis markers, link brackets/targets, heading
+      stars, `#+TITLE:` prefix; checkboxes and bullets render as glyphs
+- [x] Styles: bold/italic/underline/strike, code and verbatim chips, links, date pills, large
+      title, muted keywords/drawers/planning lines, org-indent style indentation
+- [x] Click checkboxes to toggle; Cmd/Ctrl+click links (headings and `id:` jump in-file; URLs,
+      `.org` files and other files open via the app)
+- [x] Tables: monospace, Tab/Shift+Tab align and move between cells, new row past the end
+- [x] Source blocks: tinted, monospace, syntax highlighted (syntect, cached per block)
+- [x] Quote blocks with a left bar; comments muted
+- [x] Inline images for lines holding only an image link
+- [ ] Hands-on test on macOS and Linux
+
+Deferred: hover cursor/tooltip on links, collapsing drawers (properties panel is Phase 4),
+`file:x.org::*Heading` search options, LaTeX, footnote rendering, image resizing attributes.
+
 ---
 
 ## 10. Risks
