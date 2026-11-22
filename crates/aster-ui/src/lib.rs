@@ -4,6 +4,7 @@
 //! The values and their meaning are documented in `docs/DESIGN.md`. Views must use these
 //! tokens instead of literal colors or sizes.
 
+pub mod accent;
 pub mod components;
 
 use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, WindowAppearance, point, px};
@@ -76,6 +77,19 @@ pub struct Colors {
 }
 
 impl Colors {
+    /// Replace the default accent with shades derived from `base` (e.g. the system accent).
+    pub fn with_accent(mut self, base: Rgba, dark: bool) -> Self {
+        let a = accent::derive(base, dark, &[self.base, self.layer, self.flyout]);
+        let with_alpha = |alpha: f32| Hsla { a: alpha, ..a };
+        self.accent = a;
+        self.accent_secondary = with_alpha(0.9);
+        self.accent_tertiary = with_alpha(0.8);
+        self.accent_subtle = with_alpha(if dark { 0.14 } else { 0.10 });
+        self.selection = with_alpha(if dark { 0.30 } else { 0.25 });
+        self.text_on_accent = accent::on_accent(a);
+        self
+    }
+
     pub fn light() -> Self {
         Self {
             text_primary: c(0x1A1A1A, 1.),
@@ -197,18 +211,27 @@ pub enum Elevation {
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub appearance: Appearance,
+    /// The system accent the colors were derived from (`None`: Aster's default blue).
+    pub system_accent: Option<Rgba>,
     pub colors: Colors,
 }
 
 impl Global for Theme {}
 
 impl Theme {
-    pub fn new(appearance: Appearance) -> Self {
+    pub fn new(appearance: Appearance, system_accent: Option<Rgba>) -> Self {
+        let dark = appearance == Appearance::Dark;
+        let colors = if dark {
+            Colors::dark()
+        } else {
+            Colors::light()
+        };
         Self {
             appearance,
-            colors: match appearance {
-                Appearance::Light => Colors::light(),
-                Appearance::Dark => Colors::dark(),
+            system_accent,
+            colors: match system_accent {
+                Some(a) => colors.with_accent(a, dark),
+                None => colors,
             },
         }
     }
@@ -261,19 +284,31 @@ pub fn forced_appearance() -> Option<Appearance> {
 /// Install the theme for the system appearance (or the forced one).
 pub fn init(appearance: impl Into<Appearance>, cx: &mut App) {
     let appearance = forced_appearance().unwrap_or(appearance.into());
-    cx.set_global(Theme::new(appearance));
+    cx.set_global(Theme::new(appearance, accent::system_accent()));
 }
 
 /// Follow a system appearance change, unless one is forced. Returns whether it changed.
 pub fn set_appearance(appearance: impl Into<Appearance>, cx: &mut App) -> bool {
     let appearance = forced_appearance().unwrap_or(appearance.into());
-    if cx
-        .try_global::<Theme>()
-        .is_some_and(|t| t.appearance == appearance)
-    {
+    let current = cx.try_global::<Theme>().cloned();
+    if current.as_ref().is_some_and(|t| t.appearance == appearance) {
         return false;
     }
-    cx.set_global(Theme::new(appearance));
+    let accent = current.and_then(|t| t.system_accent);
+    cx.set_global(Theme::new(appearance, accent));
+    true
+}
+
+/// Re-read the system accent (e.g. when the app regains focus). Returns whether it changed.
+pub fn refresh_accent(cx: &mut App) -> bool {
+    let accent = accent::system_accent();
+    let Some(current) = cx.try_global::<Theme>().cloned() else {
+        return false;
+    };
+    if current.system_accent == accent {
+        return false;
+    }
+    cx.set_global(Theme::new(current.appearance, accent));
     true
 }
 
@@ -281,23 +316,7 @@ pub fn set_appearance(appearance: impl Into<Appearance>, cx: &mut App) -> bool {
 mod tests {
     use super::*;
 
-    /// Relative luminance per WCAG.
-    fn luminance(c: Hsla) -> f32 {
-        let rgba: Rgba = c.into();
-        let ch = |v: f32| {
-            if v <= 0.03928 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * ch(rgba.r) + 0.7152 * ch(rgba.g) + 0.0722 * ch(rgba.b)
-    }
-
-    fn contrast(a: Hsla, b: Hsla) -> f32 {
-        let (la, lb) = (luminance(a), luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-    }
+    use crate::accent::contrast;
 
     #[test]
     fn text_contrast_meets_wcag_aa() {

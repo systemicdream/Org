@@ -94,7 +94,15 @@ impl Workspace {
         window.set_window_title(&ws.title());
         // Follow the system's light/dark setting.
         cx.observe_window_appearance(window, |_, window, cx| {
-            if aster_ui::set_appearance(window.appearance(), cx) {
+            let changed = aster_ui::set_appearance(window.appearance(), cx);
+            if aster_ui::refresh_accent(cx) | changed {
+                window.refresh();
+            }
+        })
+        .detach();
+        // Pick up a changed system accent color when the window comes back into focus.
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() && aster_ui::refresh_accent(cx) {
                 window.refresh();
             }
         })

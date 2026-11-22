@@ -53,6 +53,13 @@ Names follow WinUI's theme resources so they're easy to look up.
 
 ### Accent
 
+Aster uses the **system accent color** (macOS System Settings → Appearance → Accent color;
+on Linux the desktop's accent via the XDG appearance portal, KDE's `AccentColor`, or GNOME's
+`accent-color`). Like Windows' accent shades, the color is adjusted per theme: darkened on light
+themes and lightened on dark themes until it reaches 4.5:1 contrast on every surface, and text on
+accent fills is black or white, whichever reads better. With no system preference (macOS
+"Multicolor"), the defaults below apply. `ASTER_ACCENT=#rrggbb` overrides it.
+
 | Token | Light | Dark | Use |
 |---|---|---|---|
 | `accent.default` | `#005FB8` | `#60CDFF` | Accent buttons, selection indicator, focus, links |
