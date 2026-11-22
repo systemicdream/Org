@@ -206,6 +206,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-index"
+version = "0.1.0"
+dependencies = [
+ "aster-org",
+]
+
+[[package]]
 name = "aster-org"
 version = "0.1.0"
 dependencies = [

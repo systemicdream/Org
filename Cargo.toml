@@ -11,6 +11,7 @@ license = "MIT"
 aster-org = { path = "crates/aster-org" }
 aster-doc = { path = "crates/aster-doc" }
 aster-editor = { path = "crates/aster-editor" }
+aster-index = { path = "crates/aster-index" }
 
 # GPUI moves fast; pin exactly and upgrade deliberately.
 # Features:
@@ -34,6 +35,10 @@ syntect = { version = "=5.3.0", default-features = false, features = [
     "regex-fancy",
 ] }
 anyhow = "1"
+notify = "9"
+dirs = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Lockfile pins (no manifest entry needed, but don't `cargo update` past them blindly):
 # - libc 0.2.189 / mio 1.2.4: libc 0.2.190 removed `ENOATTR` on Linux, which breaks
