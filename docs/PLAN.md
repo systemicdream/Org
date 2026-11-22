@@ -304,7 +304,7 @@ Deferred: hover cursor/tooltip on links, collapsing drawers (properties panel is
 - [x] Command palette with fuzzy search and shortcuts
 - [x] Drawers collapse to a "▸ Properties · N" chip (click to edit the raw lines)
 - [x] Drag headings by their gutter arrow to reorder or re-nest them
-- [ ] Hands-on test on macOS and Linux
+- [x] Hands-on test
 
 Deferred: a structured properties editor (key/value form), tag autocomplete from the whole
 workspace (Phase 5 index), keyboard-driven drag, hover handles/"⋯" buttons, multiple selection.
