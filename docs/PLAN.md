@@ -336,7 +336,7 @@ sidebar, multiple windows, a persistent on-disk index (ADR 0004).
 - [x] Capture: task/note to `inbox.org`, journal entry under today in `journal.org`
 - [x] Refile to any heading or file in the folder; archive to `<file>_archive`
 - [x] Toasts for confirmations and errors
-- [ ] Hands-on test on macOS and Linux
+- [x] Hands-on test
 
 Deferred: a system-wide capture hotkey (GPUI has no global shortcuts; needs a small platform
 helper), configurable capture templates and targets, clocking/effort sums in the agenda, habits,
