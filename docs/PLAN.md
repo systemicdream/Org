@@ -267,7 +267,7 @@ Phases 2–4 are where most of the effort lands.
 - [x] Find bar: smart-case highlight, next/previous, replace, replace all (one undo step)
 - [x] Open, Save As, autosave (1 s after typing stops), save on quit
 - [x] Edit and Outline menus
-- [ ] Hands-on test on macOS and Linux
+- [x] Hands-on test
 
 Deferred: error messages in the UI (currently stderr), reloading files changed on disk (Phase 5),
 `#+STARTUP: content`, remembering folds between sessions, rope storage (ADR 0003).
