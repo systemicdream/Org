@@ -79,6 +79,14 @@ impl Workspace {
         ws
     }
 
+    /// Give the editor the folder's tags (most used first) for suggestions.
+    fn sync_known_tags(&self, cx: &mut Context<Self>) {
+        let mut tags: Vec<(String, usize)> = self.index.read(cx).tags().into_iter().collect();
+        tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let tags = tags.into_iter().map(|(t, _)| t).collect();
+        self.editor.update(cx, |e, _| e.set_known_tags(tags));
+    }
+
     /// Tell the editor which folder relative links and images resolve against.
     fn sync_base_dir(&self, cx: &mut Context<Self>) {
         let dir = self
@@ -291,6 +299,7 @@ impl Workspace {
         self._editor_subscription = sub;
         self.path = Some(path.clone());
         self.sync_base_dir(cx);
+        self.sync_known_tags(cx);
         self.dirty = false;
         self.reveal_in_tree(&path);
         window.set_window_title(&self.title());
@@ -418,6 +427,7 @@ impl Workspace {
                         cx.notify();
                     });
                     ws.scanning = false;
+                    ws.sync_known_tags(cx);
                     cx.notify();
                 })
                 .is_ok();
@@ -472,6 +482,7 @@ impl Workspace {
                 cx.notify();
             }
         });
+        self.sync_known_tags(cx);
         let Some(current) = self.path.clone() else {
             return;
         };

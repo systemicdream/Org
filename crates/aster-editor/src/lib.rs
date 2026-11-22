@@ -399,6 +399,8 @@ pub struct OrgEditor {
     search: Option<SearchState>,
     cursor_visible: bool,
     blink_task: Option<Task<()>>,
+    /// Tags used across the notes folder, most used first (for suggestions).
+    known_tags: Vec<String>,
     /// Open menu, date picker, tag input or slash menu.
     popup: Option<Popup>,
     /// Where the last popup was shown, so follow-up popups appear in the same place.
@@ -472,6 +474,7 @@ impl OrgEditor {
             search: None,
             cursor_visible: true,
             blink_task: None,
+            known_tags: Vec::new(),
             popup: None,
             last_popup_anchor: Point::default(),
             _subscriptions: subscriptions,
@@ -485,6 +488,11 @@ impl OrgEditor {
 
     pub fn text(&self) -> &str {
         self.doc.text()
+    }
+
+    /// Tags to suggest when tagging a heading (most used first).
+    pub fn set_known_tags(&mut self, tags: Vec<String>) {
+        self.known_tags = tags;
     }
 
     /// Set the folder of the open file (relative image links resolve against it).

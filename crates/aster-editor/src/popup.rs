@@ -39,6 +39,7 @@ pub(crate) enum Command {
     SetPriority(usize, Option<char>),
     RemoveTag(usize, String),
     AddTag(usize),
+    AddExistingTag(usize, String),
     TodoMenu(usize),
     PriorityMenu(usize),
     TagsMenu(usize),
@@ -273,7 +274,17 @@ impl OrgEditor {
             .iter()
             .map(|t| MenuItem::new(format!("Remove :{t}:"), Command::RemoveTag(h, t.clone())))
             .collect();
-        items.push(MenuItem::new("Add tag…", Command::AddTag(h)));
+        // Suggest tags used elsewhere in the notes folder.
+        items.extend(
+            self.known_tags
+                .iter()
+                .filter(|t| !tags.contains(t))
+                .take(8)
+                .map(|t| {
+                    MenuItem::new(format!("Add :{t}:"), Command::AddExistingTag(h, t.clone()))
+                }),
+        );
+        items.push(MenuItem::new("New tag…", Command::AddTag(h)));
         self.open_menu(anchor, Some("Tags"), items, cx);
     }
 
@@ -558,6 +569,14 @@ impl OrgEditor {
                 self.apply_op(r, cx);
             }
             Command::AddTag(h) => self.open_tag_input(h, anchor, window, cx),
+            Command::AddExistingTag(h, tag) => {
+                let mut tags = meta::heading(&self.doc, h)
+                    .map(|h| h.tags.clone())
+                    .unwrap_or_default();
+                tags.push(tag);
+                let r = meta::set_tags(&self.doc, h, &tags, sel);
+                self.apply_op(r, cx);
+            }
             Command::TodoMenu(h) => self.open_todo_menu(h, anchor, cx),
             Command::PriorityMenu(h) => self.open_priority_menu(h, anchor, cx),
             Command::TagsMenu(h) => self.open_tags_menu(h, anchor, cx),
