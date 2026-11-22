@@ -175,6 +175,77 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
+/// Editor commands for the command palette: (name, action).
+pub fn commands() -> Vec<(&'static str, Box<dyn gpui::Action>)> {
+    vec![
+        ("Toggle done (checkbox or TODO state)", Box::new(ToggleDone)),
+        ("Cycle TODO state backwards", Box::new(CycleTodoBackward)),
+        ("New heading below", Box::new(InsertHeading)),
+        ("Heading menu…", Box::new(OpenHeadingMenu)),
+        ("Move heading up", Box::new(MoveSubtreeUp)),
+        ("Move heading down", Box::new(MoveSubtreeDown)),
+        ("Indent heading (with children)", Box::new(DemoteSubtree)),
+        ("Outdent heading (with children)", Box::new(PromoteSubtree)),
+        ("Indent heading only", Box::new(DemoteHeading)),
+        ("Outdent heading only", Box::new(PromoteHeading)),
+        ("Fold heading", Box::new(Fold)),
+        ("Unfold heading", Box::new(Unfold)),
+        ("Toggle fold", Box::new(ToggleFold)),
+        ("Fold all", Box::new(FoldAll)),
+        ("Unfold all", Box::new(UnfoldAll)),
+        ("Undo", Box::new(Undo)),
+        ("Redo", Box::new(Redo)),
+        ("Select all", Box::new(SelectAll)),
+        ("Cut", Box::new(Cut)),
+        ("Copy", Box::new(Copy)),
+        ("Paste", Box::new(Paste)),
+    ]
+}
+
+/// Human-readable shortcut for a binding, e.g. "⌘⇧P" on macOS or "Ctrl+Shift+P" elsewhere.
+pub fn format_keystrokes(binding: &KeyBinding) -> String {
+    let mac = cfg!(target_os = "macos");
+    binding
+        .keystrokes()
+        .iter()
+        .map(|k| {
+            let k = k.inner();
+            let m = &k.modifiers;
+            let mut out = String::new();
+            let mods: [(bool, &str, &str); 4] = [
+                (m.control, "⌃", "Ctrl+"),
+                (m.alt, "⌥", "Alt+"),
+                (m.shift, "⇧", "Shift+"),
+                (m.platform, "⌘", "Super+"),
+            ];
+            for (on, mac_sym, other) in mods {
+                if on {
+                    out.push_str(if mac { mac_sym } else { other });
+                }
+            }
+            let key = match k.key.as_str() {
+                "enter" => "↵".to_string(),
+                "up" => "↑".to_string(),
+                "down" => "↓".to_string(),
+                "left" => "←".to_string(),
+                "right" => "→".to_string(),
+                "escape" => "Esc".to_string(),
+                "tab" => "Tab".to_string(),
+                "backspace" => "⌫".to_string(),
+                key if key.chars().count() == 1 => key.to_uppercase(),
+                key => {
+                    let mut c = key.chars();
+                    c.next()
+                        .map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+                }
+            };
+            out.push_str(&key);
+            out
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
     /// The text changed.
