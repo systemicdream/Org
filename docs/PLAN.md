@@ -241,8 +241,20 @@ Phases 2–4 are where most of the effort lands.
 - [x] Spike: `orgize` round-trip + incremental reparse; decide parser strategy ([0001](decisions/0001-org-parser.md))
 - [x] Record decisions in `docs/decisions/` (lightweight ADRs)
 - [x] Linux build verified locally (Nobara 44 / Fedora: fmt, clippy `-D warnings`, tests, build)
-- [ ] Verify CI green on macOS and Linux (first push)
-- [ ] Manually test IME (Japanese/Chinese input, dead keys, emoji palette) on each OS
+- [x] Verify CI green on macOS and Linux (first push)
+- [x] Manually test IME (Japanese input) on macOS and Linux (Wayland)
+
+### Phase 1 task list
+
+- [x] `aster-doc`: transactions (batched non-overlapping edits, inverse, position mapping)
+- [x] Undo/redo with grouping: typing and delete runs coalesce; newlines, pauses (>1s), cursor
+      jumps and commands start new steps; an IME composition is one step
+- [x] Structural ops: cycle TODO (honours `#+TODO:`), promote/demote heading or subtree, move
+      subtree among siblings, insert sibling heading, toggle checkbox
+- [x] Ops preserve CRLF and no-trailing-newline files; randomized test undoes back to exact bytes
+- [x] Editor wired to `aster-doc`, with default keybindings for all of the above
+- [x] Text storage decision: plain `String` for now ([0003](decisions/0003-text-storage.md))
+- [ ] Hands-on test of the new commands on macOS and Linux
 
 ---
 

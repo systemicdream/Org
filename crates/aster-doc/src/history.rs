@@ -125,17 +125,18 @@ fn coalesce(
 
     match origin {
         EditOrigin::Insert => {
-            // `b` inserts exactly where `a`'s inserted text ends; break on newlines so each line
-            // is its own undo step.
-            let a_end = a.range.start + a.text.len();
-            if !(b.range.is_empty() && b.range.start == a_end) || b.text.contains('\n') {
+            // `b` edits within (or appends to) the text `a` just inserted: continued typing, or
+            // an input method revising its in-progress composition. Break on newlines so each
+            // line is its own undo step.
+            let a_start = a.range.start;
+            let a_end = a_start + a.text.len();
+            if b.range.start < a_start || b.range.end > a_end || b.text.contains('\n') {
                 return None;
             }
-            let fwd = Transaction::replace(a.range.clone(), format!("{}{}", a.text, b.text));
-            let inv = Transaction::replace(
-                a_inv.range.start..a_inv.range.end + b.text.len(),
-                a_inv.text.clone(),
-            );
+            let mut merged = a.text.clone();
+            merged.replace_range(b.range.start - a_start..b.range.end - a_start, &b.text);
+            let inv = Transaction::replace(a_start..a_start + merged.len(), a_inv.text.clone());
+            let fwd = Transaction::replace(a.range.clone(), merged);
             Some((fwd, inv))
         }
         EditOrigin::Delete => {

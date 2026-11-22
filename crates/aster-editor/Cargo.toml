@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aster-doc.workspace = true
 aster-org.workspace = true
 gpui.workspace = true
 unicode-segmentation.workspace = true

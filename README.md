@@ -33,4 +33,17 @@ Platform notes:
   of gpui; the app does not use X11.
 - **Windows:** not supported yet (deferred; GPUI supports it, so it can be added later).
 
-Keys: platform-standard editing shortcuts; Cmd/Ctrl+S saves (atomic write), Cmd/Ctrl+Q quits.
+## Keys
+
+Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
+
+| Keys | Action |
+|---|---|
+| Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z (Ctrl+Y on Linux) | Undo, redo |
+| Cmd/Ctrl+Enter | Toggle checkbox on this line, else cycle the heading's TODO state |
+| Cmd/Ctrl+Shift+Enter | Cycle TODO state backwards |
+| Alt+Enter | New sibling heading after this subtree |
+| Tab, Shift+Tab (on a heading line) | Demote, promote heading with its children |
+| Cmd/Ctrl+], Cmd/Ctrl+[ | Demote, promote the current subtree from anywhere in it |
+| Alt+Up, Alt+Down | Move subtree among its siblings |
+| Cmd/Ctrl+S, Cmd/Ctrl+Q | Save (atomic write), quit |

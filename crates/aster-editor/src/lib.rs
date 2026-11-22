@@ -1,19 +1,18 @@
-//! Phase 0 editor spike: a multi-line Org text editor on raw GPUI primitives.
+//! The Org editor view, built on raw GPUI primitives.
 //!
-//! What it proves out:
 //! - IME / dead keys / emoji palette through [`EntityInputHandler`]
 //! - multi-line layout, cursor, keyboard + mouse selection, clipboard
-//! - styling driven by the parsed Org tree (headings, TODO keywords)
-//! - scrolling with the cursor kept in view
+//! - every change goes through an [`aster_doc::Document`] transaction, so it is undoable
+//! - outline commands (TODO cycling, promote/demote, move subtree, new heading, checkboxes)
+//! - styling driven by the parsed Org tree
 //!
-//! Intentionally missing (Phase 2+): rope buffer, undo, soft wrap, virtualization,
-//! word movement, live-preview hiding of markup.
+//! Still missing (Phase 2+): soft wrap, virtualization, word movement, folding, live preview.
 
 mod spans;
 
 use std::ops::Range;
 
-use aster_org::OrgTree;
+use aster_doc::{Document, EditOrigin, Selection, ops};
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
@@ -49,6 +48,19 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
+        // Outline commands
+        ToggleDone,
+        CycleTodoBackward,
+        InsertHeading,
+        PromoteSubtree,
+        DemoteSubtree,
+        PromoteHeading,
+        DemoteHeading,
+        MoveSubtreeUp,
+        MoveSubtreeDown,
+        Outdent,
     ]
 );
 
@@ -78,6 +90,18 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-v", Paste, ctx),
         KeyBinding::new("secondary-c", Copy, ctx),
         KeyBinding::new("secondary-x", Cut, ctx),
+        KeyBinding::new("secondary-z", Undo, ctx),
+        KeyBinding::new("secondary-shift-z", Redo, ctx),
+        // Outline commands. Defaults are chosen to be familiar from other apps; Org/Emacs-style
+        // bindings will live in an optional keymap.
+        KeyBinding::new("shift-tab", Outdent, ctx),
+        KeyBinding::new("secondary-enter", ToggleDone, ctx),
+        KeyBinding::new("secondary-shift-enter", CycleTodoBackward, ctx),
+        KeyBinding::new("alt-enter", InsertHeading, ctx),
+        KeyBinding::new("secondary-]", DemoteSubtree, ctx),
+        KeyBinding::new("secondary-[", PromoteSubtree, ctx),
+        KeyBinding::new("alt-up", MoveSubtreeUp, ctx),
+        KeyBinding::new("alt-down", MoveSubtreeDown, ctx),
     ];
     if cfg!(target_os = "macos") {
         bindings.extend([
@@ -91,6 +115,7 @@ pub fn bind_keys(cx: &mut App) {
         ]);
     } else {
         bindings.extend([
+            KeyBinding::new("ctrl-y", Redo, ctx),
             KeyBinding::new("ctrl-home", DocStart, ctx),
             KeyBinding::new("ctrl-end", DocEnd, ctx),
         ]);
@@ -104,8 +129,7 @@ pub struct Edited;
 pub struct OrgEditor {
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
-    text: String,
-    tree: OrgTree,
+    doc: Document,
     /// Byte offset of the start of each line. Always starts with 0.
     line_starts: Vec<usize>,
     selected_range: Range<usize>,
@@ -129,12 +153,10 @@ impl EventEmitter<Edited> for OrgEditor {}
 
 impl OrgEditor {
     pub fn new(text: String, cx: &mut Context<Self>) -> Self {
-        let tree = OrgTree::parse(&text);
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
-            text,
-            tree,
+            doc: Document::new(text),
             line_starts: Vec::new(),
             selected_range: 0..0,
             selection_reversed: false,
@@ -149,26 +171,84 @@ impl OrgEditor {
     }
 
     pub fn text(&self) -> &str {
-        &self.text
+        self.doc.text()
     }
 
     // ---- buffer -------------------------------------------------------------------------
 
-    fn edit(&mut self, range: Range<usize>, new_text: &str, cx: &mut Context<Self>) {
-        self.text.replace_range(range.clone(), new_text);
-        self.tree.replace_range(range, new_text);
-        debug_assert_eq!(self.tree.text(), self.text);
+    /// Replace `range` with `new_text` as one (possibly coalesced) undo step and put the
+    /// cursor after the inserted text.
+    fn edit(
+        &mut self,
+        range: Range<usize>,
+        new_text: &str,
+        origin: EditOrigin,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.selection();
+        let cursor = range.start + new_text.len();
+        self.doc.apply(
+            aster_doc::Transaction::replace(range, new_text),
+            before,
+            Selection::cursor(cursor),
+            origin,
+        );
+        self.set_selection(Selection::cursor(cursor));
+        self.after_change(cx);
+    }
+
+    fn after_change(&mut self, cx: &mut Context<Self>) {
         self.recompute_lines();
+        self.marked_range = None;
+        self.goal_x = None;
         self.autoscroll = true;
         cx.emit(Edited);
         cx.notify();
+    }
+
+    /// Apply a structural command's result, if it produced one.
+    fn apply_op(&mut self, result: Option<ops::OpResult>, cx: &mut Context<Self>) {
+        let Some(result) = result else { return };
+        let before = self.selection();
+        self.doc
+            .apply(result.tx, before, result.selection, EditOrigin::Other);
+        self.doc.seal_undo_group();
+        self.set_selection(result.selection);
+        self.after_change(cx);
+    }
+
+    fn selection(&self) -> Selection {
+        let r = &self.selected_range;
+        if self.selection_reversed {
+            Selection {
+                anchor: r.end,
+                head: r.start,
+            }
+        } else {
+            Selection {
+                anchor: r.start,
+                head: r.end,
+            }
+        }
+    }
+
+    fn set_selection(&mut self, sel: Selection) {
+        self.selected_range = sel.range();
+        self.selection_reversed = sel.head < sel.anchor;
+    }
+
+    fn cursor_on_heading_line(&self) -> bool {
+        let row = self.row_for_offset(self.cursor_offset());
+        let line = &self.doc.text()[self.line_range(row)];
+        let stars = line.bytes().take_while(|&b| b == b'*').count();
+        stars > 0 && line[stars..].starts_with(' ')
     }
 
     fn recompute_lines(&mut self) {
         self.line_starts.clear();
         self.line_starts.push(0);
         self.line_starts
-            .extend(self.text.match_indices('\n').map(|(i, _)| i + 1));
+            .extend(self.doc.text().match_indices('\n').map(|(i, _)| i + 1));
     }
 
     fn line_count(&self) -> usize {
@@ -181,8 +261,11 @@ impl OrgEditor {
         let mut end = self
             .line_starts
             .get(row + 1)
-            .map_or(self.text.len(), |next| next - 1);
-        if end > start && self.text.as_bytes()[end - 1] == b'\r' && end < self.text.len() {
+            .map_or(self.doc.text().len(), |next| next - 1);
+        if end > start
+            && self.doc.text().as_bytes()[end - 1] == b'\r'
+            && end < self.doc.text().len()
+        {
             end -= 1;
         }
         start..end
@@ -197,20 +280,20 @@ impl OrgEditor {
             return 0;
         }
         // Treat "\r\n" as one step.
-        if self.text[..offset].ends_with("\r\n") {
+        if self.doc.text()[..offset].ends_with("\r\n") {
             return offset - 2;
         }
-        self.text[..offset]
+        self.doc.text()[..offset]
             .grapheme_indices(true)
             .next_back()
             .map_or(0, |(i, _)| i)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.text[offset..]
+        self.doc.text()[offset..]
             .graphemes(true)
             .next()
-            .map_or(self.text.len(), |g| offset + g.len())
+            .map_or(self.doc.text().len(), |g| offset + g.len())
     }
 
     // ---- selection ----------------------------------------------------------------------
@@ -224,6 +307,7 @@ impl OrgEditor {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.doc.seal_undo_group();
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         self.autoscroll = true;
@@ -255,7 +339,7 @@ impl OrgEditor {
             .goal_x
             .get_or_insert_with(|| layout.lines[row].x_for_index(cursor - self.line_starts[row]));
         if down && row + 1 >= self.line_count() {
-            return self.text.len();
+            return self.doc.text().len();
         }
         if !down && row == 0 {
             return 0;
@@ -274,7 +358,7 @@ impl OrgEditor {
         }
         let row = ((position.y - layout.bounds.top()) / layout.line_height).floor() as usize;
         if row >= self.line_count() {
-            return self.text.len();
+            return self.doc.text().len();
         }
         let col = layout.lines[row].closest_index_for_x(position.x - layout.bounds.left());
         self.line_starts[row] + col
@@ -333,7 +417,7 @@ impl OrgEditor {
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
         self.move_to(0, cx);
-        self.select_to(self.text.len(), cx);
+        self.select_to(self.doc.text().len(), cx);
     }
 
     fn line_start(&mut self, _: &LineStart, _: &mut Window, cx: &mut Context<Self>) {
@@ -367,35 +451,122 @@ impl OrgEditor {
 
     fn doc_end(&mut self, _: &DocEnd, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.move_to(self.text.len(), cx);
+        self.move_to(self.doc.text().len(), cx);
     }
 
-    fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_boundary(self.cursor_offset()), cx);
-        }
-        self.replace_text_in_range(None, "", window, cx);
+    fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            self.previous_boundary(cursor)..cursor
+        } else {
+            self.selected_range.clone()
+        };
+        self.edit(range, "", EditOrigin::Delete, cx);
     }
 
-    fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_boundary(self.cursor_offset()), cx);
-        }
-        self.replace_text_in_range(None, "", window, cx);
+    fn delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            cursor..self.next_boundary(cursor)
+        } else {
+            self.selected_range.clone()
+        };
+        self.edit(range, "", EditOrigin::Delete, cx);
     }
 
-    fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+    fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
         // Preserve the file's line-ending style.
-        let eol = if self.text.contains("\r\n") {
+        let eol = if self.doc.text().contains("\r\n") {
             "\r\n"
         } else {
             "\n"
         };
-        self.replace_text_in_range(None, eol, window, cx);
+        self.edit(self.selected_range.clone(), eol, EditOrigin::Insert, cx);
     }
 
-    fn tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
-        self.replace_text_in_range(None, "  ", window, cx);
+    /// On a heading line, Tab demotes the heading and its children; elsewhere it indents.
+    fn tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
+        if self.cursor_on_heading_line() {
+            let r = ops::demote(&self.doc, self.selection(), true);
+            self.apply_op(r, cx);
+        } else {
+            self.edit(self.selected_range.clone(), "  ", EditOrigin::Insert, cx);
+        }
+    }
+
+    /// On a heading line, Shift+Tab promotes the heading and its children.
+    fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.cursor_on_heading_line() {
+            let r = ops::promote(&self.doc, self.selection(), true);
+            self.apply_op(r, cx);
+        }
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(sel) = self.doc.undo() {
+            self.set_selection(sel);
+            self.after_change(cx);
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(sel) = self.doc.redo() {
+            self.set_selection(sel);
+            self.after_change(cx);
+        }
+    }
+
+    /// Check off a checkbox on the current line; otherwise advance the heading's TODO state.
+    fn toggle_done(&mut self, _: &ToggleDone, _: &mut Window, cx: &mut Context<Self>) {
+        let sel = self.selection();
+        let r =
+            ops::toggle_checkbox(&self.doc, sel).or_else(|| ops::cycle_todo(&self.doc, sel, true));
+        self.apply_op(r, cx);
+    }
+
+    fn cycle_todo_backward(
+        &mut self,
+        _: &CycleTodoBackward,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let r = ops::cycle_todo(&self.doc, self.selection(), false);
+        self.apply_op(r, cx);
+    }
+
+    fn insert_heading(&mut self, _: &InsertHeading, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::insert_heading(&self.doc, self.selection());
+        self.apply_op(r, cx);
+    }
+
+    fn promote_subtree(&mut self, _: &PromoteSubtree, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::promote(&self.doc, self.selection(), true);
+        self.apply_op(r, cx);
+    }
+
+    fn demote_subtree(&mut self, _: &DemoteSubtree, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::demote(&self.doc, self.selection(), true);
+        self.apply_op(r, cx);
+    }
+
+    fn promote_heading(&mut self, _: &PromoteHeading, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::promote(&self.doc, self.selection(), false);
+        self.apply_op(r, cx);
+    }
+
+    fn demote_heading(&mut self, _: &DemoteHeading, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::demote(&self.doc, self.selection(), false);
+        self.apply_op(r, cx);
+    }
+
+    fn move_subtree_up(&mut self, _: &MoveSubtreeUp, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::move_subtree(&self.doc, self.selection(), true);
+        self.apply_op(r, cx);
+    }
+
+    fn move_subtree_down(&mut self, _: &MoveSubtreeDown, _: &mut Window, cx: &mut Context<Self>) {
+        let r = ops::move_subtree(&self.doc, self.selection(), false);
+        self.apply_op(r, cx);
     }
 
     fn show_character_palette(
@@ -407,26 +578,26 @@ impl OrgEditor {
         window.show_character_palette();
     }
 
-    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text, window, cx);
+            self.edit(self.selected_range.clone(), &text, EditOrigin::Other, cx);
         }
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
-                self.text[self.selected_range.clone()].to_string(),
+                self.doc.text()[self.selected_range.clone()].to_string(),
             ));
         }
     }
 
-    fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+    fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
-                self.text[self.selected_range.clone()].to_string(),
+                self.doc.text()[self.selected_range.clone()].to_string(),
             ));
-            self.replace_text_in_range(None, "", window, cx);
+            self.edit(self.selected_range.clone(), "", EditOrigin::Other, cx);
         }
     }
 
@@ -463,7 +634,7 @@ impl OrgEditor {
     fn offset_from_utf16(&self, offset: usize) -> usize {
         let mut utf8 = 0;
         let mut utf16 = 0;
-        for ch in self.text.chars() {
+        for ch in self.doc.text().chars() {
             if utf16 >= offset {
                 break;
             }
@@ -474,7 +645,7 @@ impl OrgEditor {
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        self.text[..offset].chars().map(char::len_utf16).sum()
+        self.doc.text()[..offset].chars().map(char::len_utf16).sum()
     }
 
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -496,7 +667,7 @@ impl EntityInputHandler for OrgEditor {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        Some(self.text[range].to_string())
+        Some(self.doc.text()[range].to_string())
     }
 
     fn selected_text_range(
@@ -531,12 +702,13 @@ impl EntityInputHandler for OrgEditor {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-        self.edit(range.clone(), new_text, cx);
-        let cursor = range.start + new_text.len();
-        self.selected_range = cursor..cursor;
-        self.selection_reversed = false;
-        self.marked_range = None;
-        self.goal_x = None;
+        // Committing or cancelling an IME composition belongs to the composition's undo step.
+        let origin = if new_text.is_empty() && self.marked_range.is_none() {
+            EditOrigin::Delete
+        } else {
+            EditOrigin::Insert
+        };
+        self.edit(range, new_text, origin, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -552,7 +724,7 @@ impl EntityInputHandler for OrgEditor {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-        self.edit(range.clone(), new_text, cx);
+        self.edit(range.clone(), new_text, EditOrigin::Insert, cx);
         self.marked_range =
             (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
         // The new selection is relative to the inserted (marked) text, in UTF-16 units.
@@ -578,7 +750,6 @@ impl EntityInputHandler for OrgEditor {
                 end..end
             });
         self.selection_reversed = false;
-        self.goal_x = None;
     }
 
     fn bounds_for_range(
@@ -686,13 +857,17 @@ impl Element for EditorElement {
             underline: None,
             strikethrough: None,
         };
-        let styled = spans::style_spans(&editor.tree, &editor.text, editor.marked_range.clone());
+        let styled = spans::style_spans(
+            editor.doc.tree(),
+            editor.doc.text(),
+            editor.marked_range.clone(),
+        );
 
         let mut lines = Vec::with_capacity(editor.line_count());
         for row in 0..editor.line_count() {
             let range = editor.line_range(row);
             let runs = spans::runs_for_range(&base, &styled, range.clone());
-            let text: SharedString = editor.text[range].to_string().into();
+            let text: SharedString = editor.doc.text()[range].to_string().into();
             lines.push(
                 window
                     .text_system()
@@ -840,6 +1015,18 @@ impl Render for OrgEditor {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::outdent))
+            .on_action(cx.listener(Self::toggle_done))
+            .on_action(cx.listener(Self::cycle_todo_backward))
+            .on_action(cx.listener(Self::insert_heading))
+            .on_action(cx.listener(Self::promote_subtree))
+            .on_action(cx.listener(Self::demote_subtree))
+            .on_action(cx.listener(Self::promote_heading))
+            .on_action(cx.listener(Self::demote_heading))
+            .on_action(cx.listener(Self::move_subtree_up))
+            .on_action(cx.listener(Self::move_subtree_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

@@ -263,4 +263,34 @@ mod tests {
         doc.undo();
         assert_eq!(doc.tree().headings().len(), 1);
     }
+
+    #[test]
+    fn ime_composition_is_one_undo_step() {
+        let t = Instant::now();
+        let mut doc = Document::new("x");
+        let o = EditOrigin::Insert;
+        // Composition: "n" -> "に" -> "にh" -> "にほ", then commit as "日本".
+        let steps: [(Range<usize>, &str); 5] = [
+            (1..1, "n"),
+            (1..2, "に"),
+            (1..4, "にh"),
+            (1..5, "にほ"),
+            (1..7, "日本"),
+        ];
+        for (range, s) in steps {
+            let after = Selection::cursor(range.start + s.len());
+            doc.apply_at(
+                Transaction::replace(range, s),
+                Selection::cursor(1),
+                after,
+                o,
+                t,
+            );
+        }
+        assert_eq!(doc.text(), "x日本");
+        doc.undo();
+        assert_eq!(doc.text(), "x");
+        doc.redo();
+        assert_eq!(doc.text(), "x日本");
+    }
 }
