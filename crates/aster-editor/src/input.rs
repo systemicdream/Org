@@ -85,7 +85,18 @@ impl EntityInputHandler for OrgEditor {
         } else {
             EditOrigin::Insert
         };
-        self.edit(range, new_text, origin, cx);
+        // "/" at the start of a line or after a space opens the slash menu.
+        let opens_slash = new_text == "/"
+            && self.mode == crate::EditorMode::Full
+            && self.marked_range.is_none()
+            && self.doc.text()[..range.start]
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace);
+        self.edit(range.clone(), new_text, origin, cx);
+        if opens_slash {
+            self.open_slash(range.start, cx);
+        }
     }
 
     fn replace_and_mark_text_in_range(

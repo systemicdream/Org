@@ -49,7 +49,7 @@ pub fn set_todo(
 }
 
 /// Byte range of a `[#X]` priority cookie (plus one trailing space, if any).
-fn priority_range(doc: &Document, h: &HeadingInfo) -> Option<Range<usize>> {
+pub fn priority_range(doc: &Document, h: &HeadingInfo) -> Option<Range<usize>> {
     let line = &doc.text()[h.title_start..h.line_end];
     let b = line.as_bytes();
     if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[3] == b']' {
@@ -82,7 +82,7 @@ pub fn set_priority(
 }
 
 /// Byte range of the tag string (`:a:b:`) on a heading line, if any.
-fn tags_range(doc: &Document, h: &HeadingInfo) -> Option<Range<usize>> {
+pub fn tags_range(doc: &Document, h: &HeadingInfo) -> Option<Range<usize>> {
     if h.tags.is_empty() {
         return None;
     }
