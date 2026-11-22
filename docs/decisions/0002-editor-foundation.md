@@ -26,7 +26,9 @@ non-editor UI (lists, popovers, inputs in dialogs) if it earns its place — eva
 
 ## Known gaps to close in Phase 2
 
-- Rope buffer + undo/redo transactions (`aster-doc`)
-- Soft wrap (`shape_text` / `WrappedLine`) and virtualized layout (only shape visible lines)
-- Word movement, double/triple-click selection, cursor blink
-- Variable line heights (needed for heading sizes and live preview)
+All closed except the rope (deferred, see ADR 0003):
+
+- ~~Rope buffer~~ (deferred) + undo/redo transactions (`aster-doc`, Phase 1)
+- Soft wrap (`shape_text` / `WrappedLine`) and virtualized layout (Phase 2)
+- Word movement, double/triple-click selection, cursor blink (Phase 2)
+- Variable line heights for heading sizes (Phase 2)
