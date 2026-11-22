@@ -39,6 +39,16 @@ def hello(name):
 Quotes get a bar on the left.
 #+end_quote
 
+* Organizing with the mouse
+:PROPERTIES:
+:CREATED: [2026-11-22 Sun]
+:END:
+- Click the red TODO above to change its state, or the [#A] to change the priority.
+- Right-click any heading for everything you can do with it, including scheduling.
+- Type / at the start of a line to insert a heading, checklist, table, code block or date.
+- Drag the small arrow left of a heading to move it; drag sideways to nest it.
+- The "Properties" chip above hides a property drawer; click it to see the raw lines.
+
 * Shortcuts to try
 (Cmd on macOS, Ctrl on Linux)
 - Cmd/Ctrl+Enter :: tick a checkbox, or step a heading through its TODO states (TODO → NEXT → DONE → none)
@@ -46,6 +56,7 @@ Quotes get a bar on the left.
 - Tab / Shift+Tab on a heading :: nest it deeper / bring it back out (children follow)
 - Alt+Up / Alt+Down :: move a heading and everything under it
 - Click the arrow left of a heading :: fold or unfold it
+- Cmd/Ctrl+Shift+P :: command palette (every command, searchable)
 - Cmd/Ctrl+F :: find
 - Cmd/Ctrl+Z :: undo, Cmd/Ctrl+Shift+Z :: redo
 

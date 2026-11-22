@@ -45,6 +45,7 @@ pub struct PrepaintState {
     /// Visible vertical range, relative to the element top.
     paint_range: (Pixels, Pixels),
     backgrounds: Vec<PaintQuad>,
+    overlays: Vec<PaintQuad>,
     images: Vec<(Bounds<Pixels>, Arc<RenderImage>)>,
     selections: Vec<PaintQuad>,
     glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
@@ -249,6 +250,7 @@ impl Element for EditorElement {
         let sel = editor.selected_range.clone();
         let mut selections = Vec::new();
         let mut backgrounds = Vec::new();
+        let mut overlays = Vec::new();
         let mut glyphs = Vec::new();
         let text = editor.doc.text();
 
@@ -353,6 +355,23 @@ impl Element for EditorElement {
             }
         }
 
+        // Drop indicator while dragging a heading.
+        if let Some((_, y, x)) = editor
+            .heading_drag
+            .as_ref()
+            .filter(|d| d.active)
+            .and_then(|d| d.target)
+        {
+            overlays.push(fill(
+                Bounds::from_corners(point(x, y - px(1.)), point(bounds.right(), y + px(1.))),
+                rgb(0x3b82f6),
+            ));
+            overlays.push(fill(
+                Bounds::new(point(x - px(3.), y - px(3.)), size(px(6.), px(6.))),
+                rgb(0x3b82f6),
+            ));
+        }
+
         // Placeholder for empty single-line inputs.
         if !full
             && text.is_empty()
@@ -412,6 +431,7 @@ impl Element for EditorElement {
             text_left,
             paint_range: (paint_top, paint_bottom),
             backgrounds,
+            overlays,
             images: image_paints,
             selections,
             glyphs,
@@ -463,6 +483,9 @@ impl Element for EditorElement {
         }
         for (shaped, origin, lh) in &prepaint.glyphs {
             shaped.paint(*origin, *lh, window, cx).ok();
+        }
+        for quad in prepaint.overlays.drain(..) {
+            window.paint_quad(quad);
         }
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()

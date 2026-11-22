@@ -291,6 +291,24 @@ Deferred: error messages in the UI (currently stderr), reloading files changed o
 Deferred: hover cursor/tooltip on links, collapsing drawers (properties panel is Phase 4),
 `file:x.org::*Heading` search options, LaTeX, footnote rendering, image resizing attributes.
 
+
+### Phase 4 task list
+
+- [x] `aster-doc::meta`: set TODO state, priority, tags, SCHEDULED/DEADLINE (keeping time and
+      repeaters), timestamp dates; move a subtree anywhere with level shifting (all fuzz-tested)
+- [x] Clickable TODO/priority/tag pills open menus; clicking a date opens a date picker
+- [x] Heading menu (right-click or Cmd/Ctrl+.): state, priority, tags, schedule, deadline, new
+      heading, move, indent/outdent, fold
+- [x] Date picker with keyboard navigation, Today and Clear
+- [x] Slash menu with prefix-ranked filtering
+- [x] Command palette with fuzzy search and shortcuts
+- [x] Drawers collapse to a "▸ Properties · N" chip (click to edit the raw lines)
+- [x] Drag headings by their gutter arrow to reorder or re-nest them
+- [x] Hands-on test
+
+Deferred: a structured properties editor (key/value form), tag autocomplete from the whole
+workspace (Phase 5 index), keyboard-driven drag, hover handles/"⋯" buttons, multiple selection.
+
 ---
 
 ## 10. Risks

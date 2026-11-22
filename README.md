@@ -58,6 +58,12 @@ Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
 | Click a checkbox | Tick / untick it |
 | Cmd/Ctrl+click a link | Follow it (headings and `id:` in the file; web links, files) |
 | Tab, Shift+Tab (in a table) | Align the table and move to the next / previous cell |
+| Cmd/Ctrl+Shift+P | Command palette: every command with its shortcut |
+| Click a TODO keyword, priority, tag or date | Change it from a menu / date picker |
+| Right-click a heading, or Cmd/Ctrl+. | Heading menu (state, priority, tags, schedule, deadline, move…) |
+| `/` at the start of a line or after a space | Slash menu: headings, to-dos, lists, tables, code, quotes, dates… |
+| Drag the arrow left of a heading | Move it (and its children); drag sideways to change its level |
+| Click a "▸ Properties" chip | Show / hide a property drawer |
 
 Files save automatically one second after you stop typing (atomic write), and on quit.
 A file with `#+STARTUP: overview` opens with every heading folded.

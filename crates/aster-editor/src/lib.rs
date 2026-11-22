@@ -12,10 +12,11 @@ mod element;
 mod find_bar;
 mod highlight;
 mod input;
+mod popup;
 mod preview;
 mod spans;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ use gpui::{
     ScrollHandle, SharedString, Subscription, Task, TextRun, Window, WrappedLine, actions, div,
     point, prelude::*, px, rgb,
 };
+use popup::{NavKey, Popup};
 use preview::RowKind;
 
 pub use find_bar::{FindBar, FindBarEvent};
@@ -83,6 +85,7 @@ actions!(
         MoveSubtreeUp,
         MoveSubtreeDown,
         Outdent,
+        OpenHeadingMenu,
         // Folding
         ToggleFold,
         Fold,
@@ -133,6 +136,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-[", PromoteSubtree, ctx),
         KeyBinding::new("alt-up", MoveSubtreeUp, ctx),
         KeyBinding::new("alt-down", MoveSubtreeDown, ctx),
+        KeyBinding::new("secondary-.", OpenHeadingMenu, ctx),
         // Folding (VS Code-style).
         KeyBinding::new("secondary-alt-[", Fold, ctx),
         KeyBinding::new("secondary-alt-]", Unfold, ctx),
@@ -171,6 +175,77 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
+/// Editor commands for the command palette: (name, action).
+pub fn commands() -> Vec<(&'static str, Box<dyn gpui::Action>)> {
+    vec![
+        ("Toggle done (checkbox or TODO state)", Box::new(ToggleDone)),
+        ("Cycle TODO state backwards", Box::new(CycleTodoBackward)),
+        ("New heading below", Box::new(InsertHeading)),
+        ("Heading menu…", Box::new(OpenHeadingMenu)),
+        ("Move heading up", Box::new(MoveSubtreeUp)),
+        ("Move heading down", Box::new(MoveSubtreeDown)),
+        ("Indent heading (with children)", Box::new(DemoteSubtree)),
+        ("Outdent heading (with children)", Box::new(PromoteSubtree)),
+        ("Indent heading only", Box::new(DemoteHeading)),
+        ("Outdent heading only", Box::new(PromoteHeading)),
+        ("Fold heading", Box::new(Fold)),
+        ("Unfold heading", Box::new(Unfold)),
+        ("Toggle fold", Box::new(ToggleFold)),
+        ("Fold all", Box::new(FoldAll)),
+        ("Unfold all", Box::new(UnfoldAll)),
+        ("Undo", Box::new(Undo)),
+        ("Redo", Box::new(Redo)),
+        ("Select all", Box::new(SelectAll)),
+        ("Cut", Box::new(Cut)),
+        ("Copy", Box::new(Copy)),
+        ("Paste", Box::new(Paste)),
+    ]
+}
+
+/// Human-readable shortcut for a binding, e.g. "⌘⇧P" on macOS or "Ctrl+Shift+P" elsewhere.
+pub fn format_keystrokes(binding: &KeyBinding) -> String {
+    let mac = cfg!(target_os = "macos");
+    binding
+        .keystrokes()
+        .iter()
+        .map(|k| {
+            let k = k.inner();
+            let m = &k.modifiers;
+            let mut out = String::new();
+            let mods: [(bool, &str, &str); 4] = [
+                (m.control, "⌃", "Ctrl+"),
+                (m.alt, "⌥", "Alt+"),
+                (m.shift, "⇧", "Shift+"),
+                (m.platform, "⌘", "Super+"),
+            ];
+            for (on, mac_sym, other) in mods {
+                if on {
+                    out.push_str(if mac { mac_sym } else { other });
+                }
+            }
+            let key = match k.key.as_str() {
+                "enter" => "↵".to_string(),
+                "up" => "↑".to_string(),
+                "down" => "↓".to_string(),
+                "left" => "←".to_string(),
+                "right" => "→".to_string(),
+                "escape" => "Esc".to_string(),
+                "tab" => "Tab".to_string(),
+                "backspace" => "⌫".to_string(),
+                key if key.chars().count() == 1 => key.to_uppercase(),
+                key => {
+                    let mut c = key.chars();
+                    c.next()
+                        .map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+                }
+            };
+            out.push_str(&key);
+            out
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
     /// The text changed.
@@ -179,6 +254,8 @@ pub enum EditorEvent {
     Confirm { back: bool },
     /// Escape.
     Cancel,
+    /// Up/Down in a single-line editor (e.g. to move through a list below it).
+    Navigate { up: bool },
     /// Cmd/Ctrl+click on a link the editor can't follow itself (URLs, files).
     OpenLink(String),
 }
@@ -189,6 +266,17 @@ pub enum EditorMode {
     Full,
     /// A one-line plain input (e.g. the find bar). Enter emits [`EditorEvent::Confirm`].
     SingleLine,
+}
+
+/// Pressing in a heading's gutter starts a potential drag; it becomes a move once the mouse
+/// travels a few pixels, otherwise the press is a click that toggles the fold.
+#[derive(Debug, Clone)]
+struct HeadingDrag {
+    heading: usize,
+    origin: Point<Pixels>,
+    active: bool,
+    /// Where it would land, and the indicator line (window y, left x).
+    target: Option<(aster_doc::meta::DropTarget, Pixels, Pixels)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +373,10 @@ pub struct OrgEditor {
     /// Monospace font family, resolved from installed fonts on first paint.
     mono_family: Option<SharedString>,
     folds: Folds,
+    /// Drawers (`:PROPERTIES:` …) shown expanded, by start offset. Drawers are collapsed into a
+    /// chip by default.
+    open_drawers: BTreeSet<usize>,
+    drawer_cache: Vec<(Range<usize>, Range<usize>)>,
     /// Document version the folds were last remapped for.
     synced_version: u64,
     hidden: Vec<Range<usize>>,
@@ -295,6 +387,8 @@ pub struct OrgEditor {
     /// Preferred x position for vertical movement.
     goal_x: Option<Pixels>,
     is_selecting: bool,
+    /// A heading being dragged from its gutter (see [`HeadingDrag`]).
+    heading_drag: Option<HeadingDrag>,
     drag: (Granularity, Range<usize>),
     autoscroll: bool,
     metrics: Option<Metrics>,
@@ -305,6 +399,10 @@ pub struct OrgEditor {
     search: Option<SearchState>,
     cursor_visible: bool,
     blink_task: Option<Task<()>>,
+    /// Open menu, date picker, tag input or slash menu.
+    popup: Option<Popup>,
+    /// Where the last popup was shown, so follow-up popups appear in the same place.
+    last_popup_anchor: Point<Pixels>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -355,6 +453,8 @@ impl OrgEditor {
             row_images: HashMap::new(),
             image_sizes: HashMap::new(),
             folds: Folds::default(),
+            open_drawers: BTreeSet::new(),
+            drawer_cache: Vec::new(),
             synced_version: 0,
             hidden: Vec::new(),
             visible_rows: Vec::new(),
@@ -363,6 +463,7 @@ impl OrgEditor {
             marked_range: None,
             goal_x: None,
             is_selecting: false,
+            heading_drag: None,
             drag: (Granularity::Char, 0..0),
             autoscroll: false,
             metrics: None,
@@ -371,6 +472,8 @@ impl OrgEditor {
             search: None,
             cursor_visible: true,
             blink_task: None,
+            popup: None,
+            last_popup_anchor: Point::default(),
             _subscriptions: subscriptions,
         };
         if mode == EditorMode::Full && startup_folded(this.doc.text()) {
@@ -462,6 +565,7 @@ impl OrgEditor {
         let mut revealed = false;
         for pos in [range.start, range.end] {
             revealed |= self.folds.reveal(pos, self.doc.headings(), self.doc.text());
+            revealed |= self.reveal_drawer(pos);
         }
         if revealed {
             self.recompute_lines();
@@ -488,11 +592,23 @@ impl OrgEditor {
         if self.synced_version != self.doc.version() {
             if let Some(tx) = self.doc.last_change() {
                 self.folds.remap(tx, self.doc.headings(), self.doc.text());
+                let starts: BTreeSet<usize> = self
+                    .compute_drawers()
+                    .into_iter()
+                    .map(|(r, _)| r.start)
+                    .collect();
+                self.open_drawers = self
+                    .open_drawers
+                    .iter()
+                    .map(|&s| tx.map(s, true))
+                    .filter(|s| starts.contains(s))
+                    .collect();
             }
             self.synced_version = self.doc.version();
         }
         self.recompute_lines();
         self.refresh_search();
+        self.popup_after_change();
         self.marked_range = None;
         self.goal_x = None;
         self.autoscroll = true;
@@ -563,8 +679,32 @@ impl OrgEditor {
         } else {
             HashMap::new()
         };
+
+        self.drawer_cache = if self.mode == EditorMode::Full {
+            self.compute_drawers()
+        } else {
+            Vec::new()
+        };
         let text = self.doc.text();
-        self.hidden = self.folds.hidden_ranges(self.doc.headings(), text);
+        let mut hidden = self.folds.hidden_ranges(self.doc.headings(), text);
+        if self.mode == EditorMode::Full {
+            hidden.extend(
+                self.drawers()
+                    .iter()
+                    .filter(|(r, _)| !self.open_drawers.contains(&r.start))
+                    .map(|(_, body)| body.clone())
+                    .filter(|b| !b.is_empty()),
+            );
+        }
+        hidden.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for r in hidden {
+            match merged.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        self.hidden = merged;
         let hidden = &self.hidden;
         self.visible_rows = (0..self.line_starts.len())
             .filter(|&row| {
@@ -755,8 +895,83 @@ impl OrgEditor {
         if self.mode != EditorMode::Full {
             return RowDisplay::plain(self.doc.text(), range);
         }
+        if let Some(label) = self.drawer_chip(range.start) {
+            return RowDisplay::replaced_line(range, &label);
+        }
         let decos = self.inline_decorations(&range);
         RowDisplay::build(self.doc.text(), range, decos, |d| self.revealed(d))
+    }
+
+    /// Drawers as (whole range, body range), cached per change.
+    fn drawers(&self) -> &[(Range<usize>, Range<usize>)] {
+        &self.drawer_cache
+    }
+
+    /// Drawers as (whole range, body range); the body is everything after the first line.
+    fn compute_drawers(&self) -> Vec<(Range<usize>, Range<usize>)> {
+        let text = self.doc.text();
+        self.doc
+            .decorations()
+            .iter()
+            .filter(|d| d.kind == DecoKind::Drawer)
+            .map(|d| {
+                let first_end = text[d.range.start..]
+                    .find('\n')
+                    .map_or(d.range.end, |i| d.range.start + i + 1)
+                    .min(d.range.end);
+                (d.range.clone(), first_end..d.range.end)
+            })
+            .collect()
+    }
+
+    /// The chip label shown in place of a drawer's first line starting at `line_start`.
+    fn drawer_chip(&self, line_start: usize) -> Option<String> {
+        let (range, body) = self
+            .drawers()
+            .iter()
+            .find(|(r, _)| r.start == line_start)
+            .cloned()?;
+        let text = self.doc.text();
+        let name = text[range.start..body.start].trim().trim_matches(':');
+        let mut c = name.chars();
+        let name: String = c.next().map_or(String::new(), |f| {
+            f.to_uppercase()
+                .chain(c.flat_map(char::to_lowercase))
+                .collect()
+        });
+        // Entries, not counting the :END: line.
+        let entries = text[body]
+            .lines()
+            .filter(|l| !l.trim().eq_ignore_ascii_case(":end:") && !l.trim().is_empty())
+            .count();
+        let open = self.open_drawers.contains(&range.start);
+        Some(format!(
+            "{} {name} · {entries}",
+            if open { "▾" } else { "▸" }
+        ))
+    }
+
+    /// Expand the drawer whose hidden body contains `offset`. Returns whether anything changed.
+    fn reveal_drawer(&mut self, offset: usize) -> bool {
+        let hit = self
+            .drawers()
+            .iter()
+            .find(|(r, body)| body.contains(&offset) && !self.open_drawers.contains(&r.start))
+            .cloned();
+        match hit {
+            Some((r, _)) => {
+                self.open_drawers.insert(r.start);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn toggle_drawer(&mut self, start: usize, cx: &mut Context<Self>) {
+        if !self.open_drawers.remove(&start) {
+            self.open_drawers.insert(start);
+        }
+        self.folds_changed(cx);
     }
 
     /// Styled ranges in display coordinates: line style, Org syntax, inline markup, search
@@ -1158,10 +1373,10 @@ impl OrgEditor {
             cx.notify();
             return;
         };
-        if self
+        let folded = self
             .folds
-            .reveal(m.start, self.doc.headings(), self.doc.text())
-        {
+            .reveal(m.start, self.doc.headings(), self.doc.text());
+        if folded | self.reveal_drawer(m.start) {
             self.recompute_lines();
         }
         self.doc.seal_undo_group();
@@ -1210,7 +1425,10 @@ impl OrgEditor {
 
     // ---- actions ------------------------------------------------------------------------
 
-    fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+    fn left(&mut self, _: &Left, window: &mut Window, cx: &mut Context<Self>) {
+        if self.popup_key(NavKey::Left, window, cx) {
+            return;
+        }
         self.goal_x = None;
         let to = if self.selected_range.is_empty() {
             let p = text::prev_grapheme(self.doc.text(), self.cursor_offset());
@@ -1221,7 +1439,10 @@ impl OrgEditor {
         self.move_to(to, cx);
     }
 
-    fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+    fn right(&mut self, _: &Right, window: &mut Window, cx: &mut Context<Self>) {
+        if self.popup_key(NavKey::Right, window, cx) {
+            return;
+        }
         self.goal_x = None;
         let to = if self.selected_range.is_empty() {
             let p = text::next_grapheme(self.doc.text(), self.cursor_offset());
@@ -1245,6 +1466,13 @@ impl OrgEditor {
     }
 
     fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
+        if self.popup_key(NavKey::Up, window, cx) {
+            return;
+        }
+        if self.mode == EditorMode::SingleLine {
+            cx.emit(EditorEvent::Navigate { up: true });
+            return;
+        }
         if !self.selected_range.is_empty() && self.goal_x.is_none() {
             self.set_selection(Selection::cursor(self.selected_range.start));
         }
@@ -1253,6 +1481,13 @@ impl OrgEditor {
     }
 
     fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
+        if self.popup_key(NavKey::Down, window, cx) {
+            return;
+        }
+        if self.mode == EditorMode::SingleLine {
+            cx.emit(EditorEvent::Navigate { up: false });
+            return;
+        }
         if !self.selected_range.is_empty() && self.goal_x.is_none() {
             self.set_selection(Selection::cursor(self.selected_range.end));
         }
@@ -1379,7 +1614,10 @@ impl OrgEditor {
         self.edit(range, "", EditOrigin::Other, cx);
     }
 
-    fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
+    fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.popup_key(NavKey::Enter, window, cx) {
+            return;
+        }
         if self.mode == EditorMode::SingleLine {
             cx.emit(EditorEvent::Confirm { back: false });
             return;
@@ -1401,7 +1639,10 @@ impl OrgEditor {
         }
     }
 
-    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.popup_key(NavKey::Escape, window, cx) {
+            return;
+        }
         cx.emit(EditorEvent::Cancel);
     }
 
@@ -1504,6 +1745,19 @@ impl OrgEditor {
         self.apply_op(r, cx);
     }
 
+    fn open_heading_menu_action(
+        &mut self,
+        _: &OpenHeadingMenu,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(h) = self.heading_at_cursor() {
+            let at = self.cursor_offset();
+            let anchor = self.anchor_below(at..at);
+            self.open_heading_menu(h.range.start, anchor, cx);
+        }
+    }
+
     fn toggle_fold(&mut self, _: &ToggleFold, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(h) = self.heading_at_cursor() {
             self.toggle_fold_heading(&h, cx);
@@ -1584,18 +1838,71 @@ impl OrgEditor {
         let r = &layout.rows[i];
         let row = r.row;
 
-        // Left of a heading's text (gutter or indent): toggle its fold.
+        // Left of a heading's text (gutter or indent): click toggles the fold, drag moves it.
         if event.position.x < layout.text_left + r.indent && self.heading_level(row).is_some() {
+            self.heading_drag = Some(HeadingDrag {
+                heading: self.line_starts[row],
+                origin: event.position,
+                active: false,
+                target: None,
+            });
+            return true;
+        }
+
+        // A drawer chip: expand / collapse.
+        if self.drawer_chip(self.line_starts[row]).is_some() {
             let start = self.line_starts[row];
-            if let Some(h) = self
-                .doc
-                .headings()
-                .iter()
-                .find(|h| h.range.start == start)
-                .cloned()
-            {
-                self.toggle_fold_heading(&h, cx);
+            self.toggle_drawer(start, cx);
+            return true;
+        }
+
+        // Clickable metadata: TODO keyword, priority, tags, dates.
+        let offset = r.display.to_buffer(col);
+        let line_start = self.line_starts[row];
+        if let Some(h) = self
+            .doc
+            .headings()
+            .iter()
+            .find(|h| h.range.start == line_start)
+            .cloned()
+        {
+            let hit = |range: &Option<Range<usize>>| {
+                range
+                    .as_ref()
+                    .is_some_and(|r| r.start <= offset && offset < r.end)
+            };
+            let start = h.range.start;
+            if hit(&h.todo_range) {
+                let anchor = self.anchor_below(h.todo_range.clone().unwrap());
+                self.open_todo_menu(start, anchor, cx);
+                return true;
             }
+            let priority = aster_doc::meta::priority_range(&self.doc, &h);
+            if hit(&priority) {
+                let anchor = self.anchor_below(priority.unwrap());
+                self.open_priority_menu(start, anchor, cx);
+                return true;
+            }
+            let tags = aster_doc::meta::tags_range(&self.doc, &h);
+            if hit(&tags) {
+                let anchor = self.anchor_below(tags.unwrap());
+                self.open_tags_menu(start, anchor, cx);
+                return true;
+            }
+        }
+        let timestamp = self
+            .doc
+            .decorations()
+            .iter()
+            .find(|d| {
+                d.kind == DecoKind::Timestamp && d.range.start <= offset && offset < d.range.end
+            })
+            .map(|d| d.range.clone());
+        if let Some(range) = timestamp
+            && !event.modifiers.shift
+        {
+            let anchor = self.anchor_below(range.clone());
+            self.open_date_picker(popup::DateTarget::Timestamp(range), anchor, cx);
             return true;
         }
 
@@ -1701,12 +2008,28 @@ impl OrgEditor {
         }
     }
 
+    /// Right-click on a heading line opens the heading menu.
+    fn on_right_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let offset = self.index_for_position(event.position, window);
+        let row = self.row_for_offset(offset);
+        let start = self.line_starts[row];
+        if self.heading_level(row).is_some() {
+            self.open_heading_menu(start, event.position, cx);
+        }
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_popup(window, cx);
         window.focus(&self.focus_handle);
         self.goal_x = None;
 
@@ -1740,8 +2063,80 @@ impl OrgEditor {
         }
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.is_selecting = false;
+        let Some(drag) = self.heading_drag.take() else {
+            return;
+        };
+        if !drag.active {
+            // A plain click in the gutter.
+            if let Some(h) = aster_doc::meta::heading(&self.doc, drag.heading).cloned() {
+                self.toggle_fold_heading(&h, cx);
+            }
+            return;
+        }
+        if let Some((target, ..)) = drag.target {
+            let r = aster_doc::meta::move_subtree_to(&self.doc, drag.heading, target);
+            self.apply_op(r, cx);
+        }
+        cx.notify();
+    }
+
+    /// Where a heading dragged to `pos` would land: before the first visible heading whose
+    /// middle is below the pointer (or at the end), at a level chosen by the pointer's x.
+    fn drop_target(
+        &self,
+        dragged: usize,
+        pos: Point<Pixels>,
+    ) -> Option<(aster_doc::meta::DropTarget, Pixels, Pixels)> {
+        let layout = self.layout.as_ref()?;
+        let y = pos.y - layout.bounds.top();
+        let headings = self.doc.headings();
+        let dragged_h = aster_doc::meta::heading(&self.doc, dragged)?;
+        let heading_rows: Vec<(&RowLayout, &aster_org::HeadingInfo)> = layout
+            .rows
+            .iter()
+            .filter_map(|r| {
+                let start = self.line_starts[r.row];
+                headings
+                    .iter()
+                    .find(|h| h.range.start == start)
+                    .map(|h| (r, h))
+            })
+            .collect();
+        let next = heading_rows
+            .iter()
+            .position(|(r, _)| r.top + r.text_height() / 2. > y);
+        let (before, line_y) = match next {
+            Some(i) => (Some(heading_rows[i].1.range.start), heading_rows[i].0.top),
+            None => (
+                None,
+                layout.rows.last().map_or(px(0.), |r| r.top + r.height()),
+            ),
+        };
+        // The heading just above the drop line limits how deep the drop can nest.
+        let above = match next {
+            Some(0) => None,
+            Some(i) => Some(heading_rows[i - 1].1),
+            None => heading_rows.last().map(|(_, h)| *h),
+        };
+        let max_level = above.map_or(1, |h| h.level + 1);
+        let step = indent_step();
+        let from_x = ((pos.x - layout.text_left) / step).floor().max(0.) as usize + 1;
+        let level = from_x.clamp(1, max_level);
+        // Dropping inside the dragged subtree is not possible.
+        if let Some(b) = before
+            && b > dragged_h.range.start
+            && b < dragged_h.range.end
+        {
+            return None;
+        }
+        let x = layout.text_left + step * (level - 1) as f32;
+        Some((
+            aster_doc::meta::DropTarget { before, level },
+            layout.bounds.top() + line_y,
+            x,
+        ))
     }
 
     fn on_mouse_move(
@@ -1750,6 +2145,20 @@ impl OrgEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(drag) = self.heading_drag.clone() {
+            let moved =
+                (event.position.x - drag.origin.x).abs() + (event.position.y - drag.origin.y).abs();
+            if drag.active || moved > px(4.) {
+                let target = self.drop_target(drag.heading, event.position);
+                self.heading_drag = Some(HeadingDrag {
+                    active: true,
+                    target,
+                    ..drag
+                });
+                cx.notify();
+            }
+            return;
+        }
         if !self.is_selecting {
             return;
         }
@@ -1839,6 +2248,9 @@ impl Render for OrgEditor {
                 .on_action(cx.listener(Self::move_subtree_up))
                 .on_action(cx.listener(Self::move_subtree_down))
                 .on_action(cx.listener(Self::toggle_fold))
+                .on_action(cx.listener(Self::open_heading_menu_action))
+                .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
+                .children(self.render_popup(cx))
                 .on_action(cx.listener(Self::fold))
                 .on_action(cx.listener(Self::unfold))
                 .on_action(cx.listener(Self::fold_all))

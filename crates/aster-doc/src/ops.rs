@@ -17,7 +17,7 @@ pub struct OpResult {
 
 impl OpResult {
     /// Keep the selection on the same text, staying before text inserted at its position.
-    fn mapped(tx: Transaction, sel: Selection) -> Self {
+    pub fn mapped(tx: Transaction, sel: Selection) -> Self {
         let selection = Selection {
             anchor: tx.map(sel.anchor, true),
             head: tx.map(sel.head, true),

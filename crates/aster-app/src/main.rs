@@ -2,6 +2,8 @@
 //!
 //! Usage: `aster [path/to/file.org]` — without a path, opens a built-in sample.
 
+mod palette;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,6 +14,7 @@ use gpui::{
     PathPromptOptions, Subscription, SystemMenuType, Task, Window, WindowBounds, WindowOptions,
     actions, div, prelude::*, px, rgb, size,
 };
+use palette::{CommandPalette, PaletteEvent};
 
 actions!(
     aster,
@@ -23,7 +26,8 @@ actions!(
         Find,
         FindReplace,
         FindNext,
-        FindPrevious
+        FindPrevious,
+        ShowCommandPalette
     ]
 );
 
@@ -38,6 +42,7 @@ struct Workspace {
     autosave: Option<Task<()>>,
     _editor_subscription: Subscription,
     _find_subscription: Option<Subscription>,
+    palette: Option<(Entity<CommandPalette>, Subscription)>,
 }
 
 impl Workspace {
@@ -56,6 +61,7 @@ impl Workspace {
             autosave: None,
             _editor_subscription: sub,
             _find_subscription: None,
+            palette: None,
         };
         window.set_window_title(&ws.title());
         ws.sync_base_dir(cx);
@@ -290,6 +296,59 @@ impl Workspace {
         }
     }
 
+    // ---- command palette ------------------------------------------------------------------
+
+    fn commands() -> Vec<(&'static str, Box<dyn gpui::Action>)> {
+        let mut commands: Vec<(&'static str, Box<dyn gpui::Action>)> = vec![
+            ("Open file…", Box::new(Open)),
+            ("Save", Box::new(Save)),
+            ("Save as…", Box::new(SaveAs)),
+            ("Find…", Box::new(Find)),
+            ("Find and replace…", Box::new(FindReplace)),
+            ("Find next", Box::new(FindNext)),
+            ("Find previous", Box::new(FindPrevious)),
+        ];
+        commands.extend(aster_editor::commands());
+        commands.push(("Quit Aster", Box::new(Quit)));
+        commands
+    }
+
+    fn show_command_palette(
+        &mut self,
+        _: &ShowCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        let target = self.editor.focus_handle(cx);
+        let palette = cx.new(|cx| CommandPalette::new(Self::commands(), target, window, cx));
+        let sub = cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, event: &PaletteEvent, window, cx| match event {
+                PaletteEvent::Run(action) => {
+                    let action = action.boxed_clone();
+                    this.close_palette(window, cx);
+                    // Run against the editor (focused again by close_palette).
+                    window.dispatch_action(action, cx);
+                }
+                PaletteEvent::Dismissed => this.close_palette(window, cx),
+            },
+        );
+        self.palette = Some((palette, sub));
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.take().is_some() {
+            window.focus(&self.editor.focus_handle(cx));
+            cx.notify();
+        }
+    }
+
     fn find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
         self.show_find(false, window, cx);
     }
@@ -348,8 +407,22 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::find_replace))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(Self::find_previous))
+            .on_action(cx.listener(Self::show_command_palette))
             .children(self.find_bar.clone())
             .child(div().flex_1().min_h_0().child(self.editor.clone()))
+            .children(self.palette.as_ref().map(|(p, _)| {
+                gpui::deferred(
+                    div()
+                        .absolute()
+                        .top(px(60.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(p.clone()),
+                )
+                .with_priority(2)
+            }))
     }
 }
 
@@ -388,6 +461,10 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Find Next", FindNext),
                 MenuItem::action("Find Previous", FindPrevious),
             ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::action("Command Palette…", ShowCommandPalette)],
         },
         Menu {
             name: "Outline".into(),
@@ -435,6 +512,7 @@ fn main() -> anyhow::Result<()> {
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-f", Find, None),
             KeyBinding::new("secondary-g", FindNext, None),
+            KeyBinding::new("secondary-shift-p", ShowCommandPalette, None),
             KeyBinding::new("secondary-shift-g", FindPrevious, None),
         ];
         keys.push(if cfg!(target_os = "macos") {

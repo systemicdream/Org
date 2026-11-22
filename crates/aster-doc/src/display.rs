@@ -93,6 +93,19 @@ impl RowDisplay {
         }
     }
 
+    /// The whole line shown as `label` (e.g. a collapsed drawer's chip).
+    pub fn replaced_line(line: Range<usize>, label: &str) -> Self {
+        Self {
+            segments: vec![Segment {
+                buf: line.clone(),
+                disp: 0..label.len(),
+                replaced: true,
+            }],
+            text: label.to_string(),
+            line,
+        }
+    }
+
     /// Display identical to the buffer line.
     pub fn plain(doc: &str, line: Range<usize>) -> Self {
         Self::build(doc, line, std::iter::empty(), |_| true)

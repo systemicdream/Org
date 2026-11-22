@@ -11,3 +11,4 @@ aster-org.workspace = true
 gpui.workspace = true
 unicode-segmentation.workspace = true
 syntect.workspace = true
+chrono.workspace = true
