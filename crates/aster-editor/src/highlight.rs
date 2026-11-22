@@ -98,8 +98,10 @@ mod tests {
     fn highlights_known_languages() {
         let spans = highlight("rust", "fn main() {\n    let x = 1;\n}\n");
         assert!(!spans.is_empty());
-        let colors: std::collections::HashSet<_> =
-            spans.iter().map(|(_, s)| format!("{:?}", s.color)).collect();
+        let colors: std::collections::HashSet<_> = spans
+            .iter()
+            .map(|(_, s)| format!("{:?}", s.color))
+            .collect();
         assert!(colors.len() > 1, "expected several colors");
         assert!(!highlight("python", "def f():\n    return 1\n").is_empty());
         assert!(!highlight("sh", "echo hi\n").is_empty());

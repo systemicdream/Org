@@ -58,7 +58,18 @@ impl Workspace {
             _find_subscription: None,
         };
         window.set_window_title(&ws.title());
+        ws.sync_base_dir(cx);
         ws
+    }
+
+    /// Tell the editor which folder relative links and images resolve against.
+    fn sync_base_dir(&self, cx: &mut Context<Self>) {
+        let dir = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        self.editor.update(cx, |e, cx| e.set_base_dir(dir, cx));
     }
 
     fn make_editor(
@@ -150,6 +161,7 @@ impl Workspace {
             if let Ok(Ok(Some(path))) = rx.await {
                 this.update_in(cx, |ws, window, cx| {
                     ws.path = Some(path);
+                    ws.sync_base_dir(cx);
                     ws.save_now(window, cx);
                 })
                 .ok();
@@ -195,6 +207,7 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = Some(path);
+        self.sync_base_dir(cx);
         self.dirty = false;
         window.set_window_title(&self.title());
         window.focus(&self.editor.focus_handle(cx));

@@ -24,10 +24,12 @@ struct Table {
 /// Byte range of the line containing `offset` (without terminator).
 fn line_at(text: &str, offset: usize) -> Range<usize> {
     let start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
-    let end = text[offset..]
-        .find('\n')
-        .map_or(text.len(), |i| offset + i);
-    let end = if text[start..end].ends_with('\r') { end - 1 } else { end };
+    let end = text[offset..].find('\n').map_or(text.len(), |i| offset + i);
+    let end = if text[start..end].ends_with('\r') {
+        end - 1
+    } else {
+        end
+    };
     start..end
 }
 
@@ -115,7 +117,10 @@ fn render(t: &Table) -> (String, Vec<Vec<usize>>) {
             }
         }
     }
-    let right_align: Vec<bool> = numeric.iter().map(|(n, total)| *total > 0 && n * 2 > *total).collect();
+    let right_align: Vec<bool> = numeric
+        .iter()
+        .map(|(n, total)| *total > 0 && n * 2 > *total)
+        .collect();
 
     let mut out = String::new();
     let mut cell_starts = Vec::new();

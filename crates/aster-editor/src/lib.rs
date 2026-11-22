@@ -18,6 +18,7 @@ mod spans;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aster_doc::display::RowDisplay;
@@ -236,6 +237,8 @@ struct RowLayout {
     indent: Pixels,
     /// What is shown for this line (markup hidden unless the cursor is in it).
     display: RowDisplay,
+    /// Space below the text for an inline image.
+    extra: Pixels,
     line_height: Pixels,
     /// Shaped only for rows near the viewport; others are shaped on demand.
     wrapped: Option<WrappedLine>,
@@ -244,6 +247,11 @@ struct RowLayout {
 
 impl RowLayout {
     fn height(&self) -> Pixels {
+        self.line_height * self.visual_lines as f32 + self.extra
+    }
+
+    /// Height of the text part (without an inline image).
+    fn text_height(&self) -> Pixels {
         self.line_height * self.visual_lines as f32
     }
 }
@@ -267,6 +275,12 @@ pub struct OrgEditor {
     /// Highlighted source blocks, keyed by hash of (language, code), so unchanged blocks are
     /// not re-highlighted on every keystroke.
     highlight_cache: HashMap<u64, std::rc::Rc<spans::Spans>>,
+    /// Folder of the open file, for resolving relative links and images.
+    base_dir: Option<PathBuf>,
+    /// Rows that show an inline image (a line holding only an image link).
+    row_images: HashMap<usize, PathBuf>,
+    /// Natural size of loaded images.
+    image_sizes: HashMap<PathBuf, gpui::Size<Pixels>>,
     row_meta: Vec<RowMeta>,
     /// Monospace font family, resolved from installed fonts on first paint.
     mono_family: Option<SharedString>,
@@ -337,6 +351,9 @@ impl OrgEditor {
             mono_family: None,
             org_spans: Vec::new(),
             highlight_cache: HashMap::new(),
+            base_dir: None,
+            row_images: HashMap::new(),
+            image_sizes: HashMap::new(),
             folds: Folds::default(),
             synced_version: 0,
             hidden: Vec::new(),
@@ -365,6 +382,47 @@ impl OrgEditor {
 
     pub fn text(&self) -> &str {
         self.doc.text()
+    }
+
+    /// Set the folder of the open file (relative image links resolve against it).
+    pub fn set_base_dir(&mut self, dir: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.base_dir = dir;
+        self.recompute_lines();
+        cx.notify();
+    }
+
+    /// Resolve a link target to a local file path (`file:`, `~/`, relative paths).
+    fn resolve_path(&self, target: &str) -> Option<PathBuf> {
+        if target.contains("://") {
+            return None;
+        }
+        let path = target.strip_prefix("file:").unwrap_or(target);
+        let path = path.split("::").next().unwrap_or(path);
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => std::env::home_dir()?.join(rest),
+            None => PathBuf::from(path),
+        };
+        Some(if path.is_relative() {
+            self.base_dir
+                .as_deref()
+                .unwrap_or(Path::new("."))
+                .join(path)
+        } else {
+            path
+        })
+    }
+
+    /// Size an image to fit `max_width` (and a maximum height).
+    fn image_display_size(&self, row: usize, max_width: Pixels) -> Option<gpui::Size<Pixels>> {
+        let natural = self.image_sizes.get(self.row_images.get(&row)?)?;
+        if natural.width <= px(0.) || natural.height <= px(0.) {
+            return None;
+        }
+        let max_height = px(420.);
+        let scale = (max_width / natural.width)
+            .min(max_height / natural.height)
+            .min(1.0);
+        Some(gpui::size(natural.width * scale, natural.height * scale))
     }
 
     /// Replace the whole text (e.g. a single-line input being reset). Not undoable.
@@ -500,6 +558,11 @@ impl OrgEditor {
         } else {
             Vec::new()
         };
+        self.row_images = if self.mode == EditorMode::Full {
+            self.find_image_rows()
+        } else {
+            HashMap::new()
+        };
         let text = self.doc.text();
         self.hidden = self.folds.hidden_ranges(self.doc.headings(), text);
         let hidden = &self.hidden;
@@ -510,6 +573,37 @@ impl OrgEditor {
                 hidden.get(i).is_none_or(|r| start < r.start)
             })
             .collect();
+    }
+
+    /// Lines that consist only of a link to an image file (Org's inline images).
+    fn find_image_rows(&self) -> HashMap<usize, PathBuf> {
+        const EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+        let text = self.doc.text();
+        let mut out = HashMap::new();
+        for d in self.doc.decorations() {
+            let DecoKind::Link {
+                target,
+                has_description: false,
+            } = &d.kind
+            else {
+                continue;
+            };
+            let row = self.row_for_offset(d.range.start);
+            if text[self.line_range(row)].trim() != &text[d.range.clone()] {
+                continue;
+            }
+            let Some(path) = self.resolve_path(target) else {
+                continue;
+            };
+            let is_image = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| EXTS.contains(&e.to_ascii_lowercase().as_str()));
+            if is_image {
+                out.insert(row, path);
+            }
+        }
+        out
     }
 
     /// Syntax-highlight spans for every source block (absolute offsets), using the cache.
@@ -532,9 +626,11 @@ impl OrgEditor {
                 .get(&key)
                 .cloned()
                 .unwrap_or_else(|| std::rc::Rc::new(highlight::highlight(lang, code)));
-            out.extend(spans.iter().map(|(r, st)| {
-                (r.start + d.range.start..r.end + d.range.start, *st)
-            }));
+            out.extend(
+                spans
+                    .iter()
+                    .map(|(r, st)| (r.start + d.range.start..r.end + d.range.start, *st)),
+            );
             used.insert(key, spans);
         }
         // Keep only blocks that still exist.

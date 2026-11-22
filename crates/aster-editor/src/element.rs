@@ -6,10 +6,14 @@
 
 use aster_doc::display::RowDisplay;
 use aster_doc::folds::foldable_range;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use gpui::{
-    App, Bounds, ElementId, ElementInputHandler, Entity, GlobalElementId, LayoutId, PaintQuad,
-    Pixels, Point, ShapedLine, Style, TextAlign, TextRun, Window, fill, point, prelude::*, px,
-    relative, rgb, rgba, size,
+    App, Bounds, Corners, ElementId, ElementInputHandler, Entity, GlobalElementId,
+    ImgResourceLoader, LayoutId, PaintQuad, Pixels, Point, RenderImage, Resource, ShapedLine,
+    Style, TextAlign, TextRun, Window, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 
 use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout, muted};
@@ -18,6 +22,9 @@ use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout, muted};
 fn gutter() -> Pixels {
     px(22.)
 }
+
+/// Space above and below an inline image.
+const IMAGE_PADDING: Pixels = px(6.);
 
 /// Extra rows shaped above and below the viewport, so scrolling a little needs no reshaping.
 const OVERSCAN_LINES: f32 = 8.;
@@ -38,6 +45,7 @@ pub struct PrepaintState {
     /// Visible vertical range, relative to the element top.
     paint_range: (Pixels, Pixels),
     backgrounds: Vec<PaintQuad>,
+    images: Vec<(Bounds<Pixels>, Arc<RenderImage>)>,
     selections: Vec<PaintQuad>,
     glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
     cursor: Option<PaintQuad>,
@@ -85,7 +93,11 @@ impl Element for EditorElement {
                         let key =
                             editor.wrap_key(row, scale, editor.row_wrap_width(row, wrap_width));
                         let lines = editor.wrap_cache.get(&key).copied().unwrap_or(1);
-                        line_height * scale * lines as f32
+                        let image = editor
+                            .row_wrap_width(row, wrap_width)
+                            .and_then(|w| editor.image_display_size(row, w))
+                            .map_or(px(0.), |s| s.height + IMAGE_PADDING * 2.);
+                        line_height * scale * lines as f32 + image
                     })
                     .fold(px(0.), |a, b| a + b)
             }
@@ -126,7 +138,31 @@ impl Element for EditorElement {
         };
         self.editor
             .update(cx, |e, _| e.metrics = Some(metrics.clone()));
+
+        // Load inline images (asynchronously; the view is notified when one arrives).
+        let image_paths: Vec<PathBuf> = self.editor.read(cx).row_images.values().cloned().collect();
+        let mut images: HashMap<PathBuf, Arc<RenderImage>> = HashMap::new();
+        for path in image_paths {
+            let resource = Resource::Path(path.clone().into());
+            if let Some(Ok(img)) = window.use_asset::<ImgResourceLoader>(&resource, cx) {
+                images.insert(path, img);
+            }
+        }
+        let scale_factor = window.scale_factor();
+        self.editor.update(cx, |e, _| {
+            for (path, img) in &images {
+                let s = img.size(0);
+                e.image_sizes.insert(
+                    path.clone(),
+                    gpui::size(
+                        px(s.width.0 as f32 / scale_factor),
+                        px(s.height.0 as f32 / scale_factor),
+                    ),
+                );
+            }
+        });
         let editor = self.editor.read(cx);
+        let mut image_paints = Vec::new();
 
         // Which part of the element is on screen.
         let viewport = if full {
@@ -165,16 +201,30 @@ impl Element for EditorElement {
                 let display = RowDisplay::plain(editor.doc.text(), editor.line_range(row));
                 (None, display, estimate)
             };
+            let extra = editor
+                .row_wrap_width(row, metrics.wrap_width)
+                .and_then(|w| editor.image_display_size(row, w))
+                .map_or(px(0.), |size| {
+                    let top = bounds.top() + y + lh * visual_lines as f32 + IMAGE_PADDING;
+                    if let Some(img) = editor.row_images.get(&row).and_then(|p| images.get(p)) {
+                        image_paints.push((
+                            Bounds::new(point(text_left + indent, top), size),
+                            img.clone(),
+                        ));
+                    }
+                    size.height + IMAGE_PADDING * 2.
+                });
             rows.push(RowLayout {
                 row,
                 top: y,
                 indent,
                 display,
+                extra,
                 line_height: lh,
                 wrapped,
                 visual_lines,
             });
-            y += lh * visual_lines as f32;
+            y += lh * visual_lines as f32 + extra;
         }
         let total_height = y;
 
@@ -219,7 +269,7 @@ impl Element for EditorElement {
                 backgrounds.push(fill(
                     Bounds::from_corners(
                         point(origin.x - px(8.), origin.y),
-                        point(bounds.right(), origin.y + r.height()),
+                        point(bounds.right(), origin.y + r.text_height()),
                     ),
                     rgb(0xf3f4f6),
                 ));
@@ -362,6 +412,7 @@ impl Element for EditorElement {
             text_left,
             paint_range: (paint_top, paint_bottom),
             backgrounds,
+            images: image_paints,
             selections,
             glyphs,
             cursor: cursor_quad,
@@ -403,6 +454,11 @@ impl Element for EditorElement {
             w.paint_background(origin, r.line_height, TextAlign::Left, None, window, cx)
                 .ok();
             w.paint(origin, r.line_height, TextAlign::Left, None, window, cx)
+                .ok();
+        }
+        for (b, img) in prepaint.images.drain(..) {
+            window
+                .paint_image(b, Corners::all(px(6.)), img, 0, false)
                 .ok();
         }
         for (shaped, origin, lh) in &prepaint.glyphs {
