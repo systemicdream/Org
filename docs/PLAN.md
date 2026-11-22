@@ -286,7 +286,7 @@ Deferred: error messages in the UI (currently stderr), reloading files changed o
 - [x] Source blocks: tinted, monospace, syntax highlighted (syntect, cached per block)
 - [x] Quote blocks with a left bar; comments muted
 - [x] Inline images for lines holding only an image link
-- [ ] Hands-on test on macOS and Linux
+- [x] Hands-on test
 
 Deferred: hover cursor/tooltip on links, collapsing drawers (properties panel is Phase 4),
 `file:x.org::*Heading` search options, LaTeX, footnote rendering, image resizing attributes.
