@@ -268,6 +268,17 @@ pub enum EditorMode {
     SingleLine,
 }
 
+/// Pressing in a heading's gutter starts a potential drag; it becomes a move once the mouse
+/// travels a few pixels, otherwise the press is a click that toggles the fold.
+#[derive(Debug, Clone)]
+struct HeadingDrag {
+    heading: usize,
+    origin: Point<Pixels>,
+    active: bool,
+    /// Where it would land, and the indicator line (window y, left x).
+    target: Option<(aster_doc::meta::DropTarget, Pixels, Pixels)>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Granularity {
     Char,
@@ -376,6 +387,8 @@ pub struct OrgEditor {
     /// Preferred x position for vertical movement.
     goal_x: Option<Pixels>,
     is_selecting: bool,
+    /// A heading being dragged from its gutter (see [`HeadingDrag`]).
+    heading_drag: Option<HeadingDrag>,
     drag: (Granularity, Range<usize>),
     autoscroll: bool,
     metrics: Option<Metrics>,
@@ -450,6 +463,7 @@ impl OrgEditor {
             marked_range: None,
             goal_x: None,
             is_selecting: false,
+            heading_drag: None,
             drag: (Granularity::Char, 0..0),
             autoscroll: false,
             metrics: None,
@@ -1824,18 +1838,14 @@ impl OrgEditor {
         let r = &layout.rows[i];
         let row = r.row;
 
-        // Left of a heading's text (gutter or indent): toggle its fold.
+        // Left of a heading's text (gutter or indent): click toggles the fold, drag moves it.
         if event.position.x < layout.text_left + r.indent && self.heading_level(row).is_some() {
-            let start = self.line_starts[row];
-            if let Some(h) = self
-                .doc
-                .headings()
-                .iter()
-                .find(|h| h.range.start == start)
-                .cloned()
-            {
-                self.toggle_fold_heading(&h, cx);
-            }
+            self.heading_drag = Some(HeadingDrag {
+                heading: self.line_starts[row],
+                origin: event.position,
+                active: false,
+                target: None,
+            });
             return true;
         }
 
@@ -2053,8 +2063,80 @@ impl OrgEditor {
         }
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.is_selecting = false;
+        let Some(drag) = self.heading_drag.take() else {
+            return;
+        };
+        if !drag.active {
+            // A plain click in the gutter.
+            if let Some(h) = aster_doc::meta::heading(&self.doc, drag.heading).cloned() {
+                self.toggle_fold_heading(&h, cx);
+            }
+            return;
+        }
+        if let Some((target, ..)) = drag.target {
+            let r = aster_doc::meta::move_subtree_to(&self.doc, drag.heading, target);
+            self.apply_op(r, cx);
+        }
+        cx.notify();
+    }
+
+    /// Where a heading dragged to `pos` would land: before the first visible heading whose
+    /// middle is below the pointer (or at the end), at a level chosen by the pointer's x.
+    fn drop_target(
+        &self,
+        dragged: usize,
+        pos: Point<Pixels>,
+    ) -> Option<(aster_doc::meta::DropTarget, Pixels, Pixels)> {
+        let layout = self.layout.as_ref()?;
+        let y = pos.y - layout.bounds.top();
+        let headings = self.doc.headings();
+        let dragged_h = aster_doc::meta::heading(&self.doc, dragged)?;
+        let heading_rows: Vec<(&RowLayout, &aster_org::HeadingInfo)> = layout
+            .rows
+            .iter()
+            .filter_map(|r| {
+                let start = self.line_starts[r.row];
+                headings
+                    .iter()
+                    .find(|h| h.range.start == start)
+                    .map(|h| (r, h))
+            })
+            .collect();
+        let next = heading_rows
+            .iter()
+            .position(|(r, _)| r.top + r.text_height() / 2. > y);
+        let (before, line_y) = match next {
+            Some(i) => (Some(heading_rows[i].1.range.start), heading_rows[i].0.top),
+            None => (
+                None,
+                layout.rows.last().map_or(px(0.), |r| r.top + r.height()),
+            ),
+        };
+        // The heading just above the drop line limits how deep the drop can nest.
+        let above = match next {
+            Some(0) => None,
+            Some(i) => Some(heading_rows[i - 1].1),
+            None => heading_rows.last().map(|(_, h)| *h),
+        };
+        let max_level = above.map_or(1, |h| h.level + 1);
+        let step = indent_step();
+        let from_x = ((pos.x - layout.text_left) / step).floor().max(0.) as usize + 1;
+        let level = from_x.clamp(1, max_level);
+        // Dropping inside the dragged subtree is not possible.
+        if let Some(b) = before
+            && b > dragged_h.range.start
+            && b < dragged_h.range.end
+        {
+            return None;
+        }
+        let x = layout.text_left + step * (level - 1) as f32;
+        Some((
+            aster_doc::meta::DropTarget { before, level },
+            layout.bounds.top() + line_y,
+            x,
+        ))
     }
 
     fn on_mouse_move(
@@ -2063,6 +2145,20 @@ impl OrgEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(drag) = self.heading_drag.clone() {
+            let moved =
+                (event.position.x - drag.origin.x).abs() + (event.position.y - drag.origin.y).abs();
+            if drag.active || moved > px(4.) {
+                let target = self.drop_target(drag.heading, event.position);
+                self.heading_drag = Some(HeadingDrag {
+                    active: true,
+                    target,
+                    ..drag
+                });
+                cx.notify();
+            }
+            return;
+        }
         if !self.is_selecting {
             return;
         }
