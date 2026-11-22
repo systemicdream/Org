@@ -22,7 +22,9 @@ use crate::watch::{self, FolderWatcher};
 use crate::*;
 use aster_doc::ops::OpResult;
 use aster_doc::{Document, Selection, Transaction, dates, meta};
-use aster_ui::{ActiveTheme, ramp};
+use aster_ui::components::Tooltip;
+use aster_ui::icons::{Icon, icon};
+use aster_ui::{ActiveTheme, components, ramp};
 
 pub const SAMPLE: &str = include_str!("../assets/welcome.org");
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1000);
@@ -479,6 +481,7 @@ impl Workspace {
                         PickerItem {
                             label: format!("{} (top level)", f.display_name()).into(),
                             detail: Some(f.rel.clone().into()),
+                            icon: Some(Icon::Document),
                             ..Default::default()
                         },
                         PickTarget::Refile(f.path.clone(), None),
@@ -507,6 +510,7 @@ impl Workspace {
                         PickerItem {
                             label: outline.into(),
                             detail: Some(f.rel.clone().into()),
+                            icon: Some(Icon::ArrowMove),
                             ..Default::default()
                         },
                         PickTarget::Refile(f.path.clone(), Some(hd.offset)),
@@ -1215,6 +1219,11 @@ impl Workspace {
                             label: f.display_name().into(),
                             detail: Some(f.rel.clone().into()),
                             hint: f.conflict.then(|| "sync conflict".into()),
+                            icon: Some(if f.conflict {
+                                Icon::Warning
+                            } else {
+                                Icon::Document
+                            }),
                             ..Default::default()
                         },
                         PickTarget::File(f.path.clone()),
@@ -1258,6 +1267,7 @@ impl Workspace {
                             highlight: Some(hit.snippet_match.clone()),
                             detail: Some(format!("{}:{}", hit.rel, hit.line).into()),
                             hint: None,
+                            icon: Some(Icon::Document),
                         },
                         PickTarget::Location(hit.path.clone(), hit.offset..hit.offset + len),
                     )
@@ -1288,6 +1298,7 @@ impl Workspace {
                         PickerItem {
                             label: label.into(),
                             detail: Some(f.rel.clone().into()),
+                            icon: Some(Icon::Tag),
                             ..Default::default()
                         },
                         PickTarget::Location(f.path.clone(), h.offset..h.offset),
@@ -1395,27 +1406,87 @@ impl Render for Workspace {
             None
         };
         let has_sidebar = sidebar.is_some();
-        // macOS: a transparent title bar over the base layer (docs/DESIGN.md §11). Dragging it
-        // moves the window; it shows the document name.
-        let title_bar = cfg!(target_os = "macos").then(|| {
-            div()
-                .id("title-bar")
-                .h(px(TITLE_BAR_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(ramp::BODY.size)
-                .text_color(colors.text_secondary)
-                .child(window.window_title())
-                .on_mouse_down(gpui::MouseButton::Left, |e, window, _| {
-                    if e.click_count == 2 {
-                        window.zoom_window();
-                    } else {
-                        window.start_window_move();
-                    }
-                })
-        });
+        // The command bar (docs/DESIGN.md §11). On macOS it's the transparent title bar (traffic
+        // lights on the left, drag to move); elsewhere it sits under the native title bar and
+        // gives access to commands that live in the menu bar on macOS.
+        let mac = cfg!(target_os = "macos");
+        let bar_button = |id: &'static str,
+                          glyph: Icon,
+                          tip: &'static str,
+                          action: fn() -> Box<dyn Action>,
+                          cx: &mut Context<Self>| {
+            components::icon_button(id, glyph, cx)
+                .tooltip(move |window, cx| Tooltip::text(tip, window, cx))
+                .on_click(cx.listener(move |_, _, window, cx| {
+                    window.dispatch_action(action(), cx);
+                }))
+        };
+        let title_bar = div()
+            .id("title-bar")
+            .h(px(TITLE_BAR_HEIGHT))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .when(mac, |d| d.pl(px(78.)))
+            .child(bar_button(
+                "bar-sidebar",
+                Icon::PanelLeft,
+                "Toggle sidebar",
+                || Box::new(ToggleSidebar),
+                cx,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(ramp::BODY.size)
+                    .text_color(colors.text_secondary)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(window.window_title())
+                    .when(mac, |d| {
+                        d.on_mouse_down(gpui::MouseButton::Left, |e, window, _| {
+                            if e.click_count == 2 {
+                                window.zoom_window();
+                            } else {
+                                window.start_window_move();
+                            }
+                        })
+                    }),
+            )
+            .child(bar_button(
+                "bar-search",
+                Icon::Search,
+                "Search all files",
+                || Box::new(SearchAll),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-capture",
+                Icon::NoteAdd,
+                "Capture",
+                || Box::new(Capture),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-agenda",
+                Icon::Agenda,
+                "Agenda",
+                || Box::new(ShowAgenda),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-commands",
+                Icon::More,
+                "All commands",
+                || Box::new(ShowCommandPalette),
+                cx,
+            ));
         let main = match self.agenda.as_ref().filter(|_| self.show_agenda) {
             Some((agenda, _)) => agenda.clone().into_any_element(),
             None => self.editor.clone().into_any_element(),
@@ -1447,7 +1518,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::capture))
             .on_action(cx.listener(Self::refile))
             .on_action(cx.listener(Self::archive))
-            .children(title_bar)
+            .child(title_bar)
             .child(
                 div()
                     .flex_1()
@@ -1508,12 +1579,12 @@ impl Render for Workspace {
                 let surface = if error {
                     surface
                         .bg(colors.critical_bg)
-                        .child(div().text_color(colors.critical).child("⛔"))
+                        .child(icon(Icon::ErrorCircle, px(16.), colors.critical).mt(px(2.)))
                         .child(div().text_color(colors.text_primary).child(msg))
                 } else {
                     surface
                         .bg(colors.flyout)
-                        .child(div().text_color(colors.accent).child("✓"))
+                        .child(icon(Icon::CheckmarkCircle, px(16.), colors.success).mt(px(2.)))
                         .child(div().text_color(colors.text_primary).child(msg))
                 };
                 gpui::deferred(surface).with_priority(3)

@@ -8,6 +8,7 @@ use aster_doc::dates;
 use aster_editor::{EditorEvent, OrgEditor};
 use aster_index::Index;
 use aster_ui::components::{self, ButtonKind};
+use aster_ui::icons::Icon;
 use aster_ui::{ActiveTheme, Colors, ramp};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
@@ -259,6 +260,19 @@ impl AgendaView {
         )
     }
 
+    fn nav_icon(
+        &self,
+        id: &'static str,
+        glyph: Icon,
+        cx: &mut Context<Self>,
+        f: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> impl IntoElement {
+        components::icon_button(id, glyph, cx).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| f(this, window, cx)),
+        )
+    }
+
     fn nav_button(
         &self,
         id: &'static str,
@@ -478,9 +492,9 @@ impl Render for AgendaView {
                     .child(self.tab("Search", Mode::Search, cx))
                     .child(div().flex_1())
                     .when(matches!(self.mode, Mode::Day | Mode::Week), |d| {
-                        d.child(self.nav_button("agenda-back", "‹", cx, |t, _, cx| t.step(false, cx)))
+                        d.child(self.nav_icon("agenda-back", Icon::ChevronLeft, cx, |t, _, cx| t.step(false, cx)))
                             .child(self.nav_button("agenda-today", "Today", cx, |t, w, cx| t.today(&AgendaToday, w, cx)))
-                            .child(self.nav_button("agenda-forward", "›", cx, |t, _, cx| t.step(true, cx)))
+                            .child(self.nav_icon("agenda-forward", Icon::ChevronRight, cx, |t, _, cx| t.step(true, cx)))
                     }),
             )
             .child(

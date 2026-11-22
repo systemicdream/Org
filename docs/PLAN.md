@@ -352,7 +352,8 @@ helper), configurable capture templates and targets, clocking/effort sums in the
 - [x] Every view uses tokens (no hard-coded colors); follows the system appearance live;
       `ASTER_APPEARANCE=light|dark` override
 - [x] Layout: base layer + rounded content layer; transparent title bar on macOS
-- [ ] Fluent UI System Icons (bundled SVG)
+- [x] Fluent UI System Icons (bundled SVG, MIT) with a command bar on every platform
+- [x] System accent color with per-theme contrast-safe shades
 - [ ] Settings (appearance, font size, capture targets/templates, keymap) with a settings page
 - [ ] First run: choose/create a notes folder, welcome notebook, starter templates, empty states
 - [ ] Optional Emacs keymap

@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use aster_editor::{EditorEvent, OrgEditor};
+use aster_ui::icons::{Icon, icon};
 use aster_ui::{ActiveTheme, components};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, SharedString,
@@ -34,6 +35,8 @@ pub struct PickerItem {
     pub detail: Option<SharedString>,
     /// Right-aligned hint (e.g. a shortcut).
     pub hint: Option<SharedString>,
+    /// Leading icon.
+    pub icon: Option<Icon>,
 }
 
 pub type Provider = Box<dyn Fn(&str, &App) -> Vec<(PickerItem, PickTarget)>>;
@@ -157,9 +160,21 @@ impl Render for Picker {
             .take(MAX_ROWS)
             .enumerate()
             .map(|(i, (item, _))| {
-                components::list_item(("picker-item", i), i == self.selected, cx)
+                let selected = i == self.selected;
+                components::list_item(("picker-item", i), selected, cx)
                     .py_1()
-                    .gap_4()
+                    .gap_3()
+                    .children(item.icon.map(|g| {
+                        icon(
+                            g,
+                            px(16.),
+                            if selected {
+                                colors.accent
+                            } else {
+                                colors.text_secondary
+                            },
+                        )
+                    }))
                     .child(
                         div()
                             .flex_1()

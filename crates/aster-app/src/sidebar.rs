@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use aster_ui::icons::{Icon, icon};
 use aster_ui::{ActiveTheme, components, ramp};
 use gpui::{Context, MouseButton, SharedString, div, prelude::*, px};
 
@@ -77,12 +78,20 @@ pub fn build_tree(files: &[(String, PathBuf, bool)], expanded: &BTreeSet<String>
 
 fn view_row(
     id: &'static str,
+    glyph: Icon,
     label: &'static str,
     selected: bool,
     cx: &mut Context<Workspace>,
     on_click: fn(&mut Workspace, &mut gpui::Window, &mut Context<Workspace>),
 ) -> impl IntoElement {
+    let c = cx.theme().colors;
     components::list_item(id, selected, cx)
+        .gap_3()
+        .child(icon(
+            glyph,
+            px(16.),
+            if selected { c.accent } else { c.text_secondary },
+        ))
         .child(label)
         .on_mouse_down(
             MouseButton::Left,
@@ -98,6 +107,7 @@ impl Workspace {
         let views = [
             view_row(
                 "view-agenda",
+                Icon::Agenda,
                 "Agenda",
                 matches!(current_view, Some(Mode::Day | Mode::Week | Mode::Search)),
                 cx,
@@ -106,6 +116,7 @@ impl Workspace {
             .into_any_element(),
             view_row(
                 "view-todo",
+                Icon::TodoList,
                 "To-do list",
                 current_view == Some(Mode::Todo),
                 cx,
@@ -132,12 +143,28 @@ impl Workspace {
             .into_iter()
             .enumerate()
             .map(|(i, row)| {
-                let (chevron, selected, color) = match &row.kind {
-                    TreeKind::Folder { open, .. } => {
-                        (if *open { "⌄" } else { "›" }, false, colors.text_primary)
-                    }
+                let (chevron, kind_icon, selected, color) = match &row.kind {
+                    TreeKind::Folder { open, .. } => (
+                        Some(if *open {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        }),
+                        if *open {
+                            Icon::FolderOpen
+                        } else {
+                            Icon::Folder
+                        },
+                        false,
+                        colors.text_primary,
+                    ),
                     TreeKind::File { path, conflict } => (
-                        "",
+                        None,
+                        if *conflict {
+                            Icon::Warning
+                        } else {
+                            Icon::Document
+                        },
                         current.as_ref() == Some(path),
                         if *conflict {
                             colors.caution
@@ -155,13 +182,24 @@ impl Workspace {
                 components::list_item(("tree-row", i), selected, cx)
                     .pl(px(12. + 16. * row.depth as f32))
                     .text_color(color)
+                    .gap_1p5()
                     .child(
                         div()
                             .w(px(12.))
                             .flex_shrink_0()
-                            .text_color(colors.text_secondary)
-                            .child(chevron),
+                            .children(chevron.map(|c| icon(c, px(12.), colors.text_secondary))),
                     )
+                    .child(icon(
+                        kind_icon,
+                        px(16.),
+                        if conflict {
+                            colors.caution
+                        } else if selected {
+                            colors.accent
+                        } else {
+                            colors.text_secondary
+                        },
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -195,12 +233,9 @@ impl Workspace {
             .map(|(i, (tag, count))| {
                 let t = tag.clone();
                 components::list_item(("tag-row", i), false, cx)
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_color(colors.text_secondary)
-                            .child(format!("#{tag}")),
-                    )
+                    .gap_3()
+                    .child(icon(Icon::Tag, px(16.), colors.text_secondary))
+                    .child(div().flex_1().child(tag.clone()))
                     .child(components::caption(count.to_string(), cx))
                     .on_mouse_down(
                         MouseButton::Left,

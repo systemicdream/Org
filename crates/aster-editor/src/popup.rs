@@ -13,6 +13,7 @@ use gpui::{
 
 use crate::{EditorEvent, OrgEditor};
 use aster_ui::ActiveTheme;
+use aster_ui::icons::{Icon, icon};
 
 /// What a date picker changes.
 #[derive(Clone, Debug)]
@@ -55,6 +56,7 @@ pub(crate) struct MenuItem {
     label: SharedString,
     hint: Option<SharedString>,
     checked: bool,
+    icon: Option<Icon>,
     command: Command,
 }
 
@@ -64,8 +66,14 @@ impl MenuItem {
             label: label.into(),
             hint: None,
             checked: false,
+            icon: None,
             command,
         }
+    }
+
+    fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     fn hint(mut self, hint: impl Into<SharedString>) -> Self {
@@ -153,6 +161,24 @@ const SLASH_ITEMS: &[(SlashKind, &str, &str)] = &[
     (SlashKind::Schedule, "Schedule…", "scheduled date when"),
     (SlashKind::Deadline, "Deadline…", "due date"),
 ];
+
+fn slash_icon(kind: SlashKind) -> Icon {
+    match kind {
+        SlashKind::Heading => Icon::Heading1,
+        SlashKind::Subheading => Icon::Heading2,
+        SlashKind::Todo | SlashKind::Checklist => Icon::Checkbox,
+        SlashKind::Bullets => Icon::BulletList,
+        SlashKind::Numbered => Icon::NumberList,
+        SlashKind::Table => Icon::Table,
+        SlashKind::Code => Icon::Code,
+        SlashKind::Quote => Icon::Quote,
+        SlashKind::Date => Icon::CalendarToday,
+        SlashKind::Link => Icon::Link,
+        SlashKind::Divider => Icon::Divider,
+        SlashKind::Schedule => Icon::Schedule,
+        SlashKind::Deadline => Icon::Deadline,
+    }
+}
 
 fn slash_matches(query: &str) -> Vec<(SlashKind, &'static str)> {
     let q = query.to_lowercase();
@@ -275,7 +301,10 @@ impl OrgEditor {
             .unwrap_or_default();
         let mut items: Vec<MenuItem> = tags
             .iter()
-            .map(|t| MenuItem::new(format!("Remove :{t}:"), Command::RemoveTag(h, t.clone())))
+            .map(|t| {
+                MenuItem::new(format!("Remove :{t}:"), Command::RemoveTag(h, t.clone()))
+                    .icon(Icon::Dismiss)
+            })
             .collect();
         // Suggest tags used elsewhere in the notes folder.
         items.extend(
@@ -287,7 +316,7 @@ impl OrgEditor {
                     MenuItem::new(format!("Add :{t}:"), Command::AddExistingTag(h, t.clone()))
                 }),
         );
-        items.push(MenuItem::new("New tag…", Command::AddTag(h)));
+        items.push(MenuItem::new("New tag…", Command::AddTag(h)).icon(Icon::Add));
         self.open_menu(anchor, Some("Tags"), items, cx);
     }
 
@@ -309,31 +338,43 @@ impl OrgEditor {
             "Alt+"
         };
         let items = vec![
-            MenuItem::new("Set state…", Command::TodoMenu(h)).hint(key(&format!("{mod_key}↵"))),
-            MenuItem::new("Set priority…", Command::PriorityMenu(h)),
-            MenuItem::new("Tags…", Command::TagsMenu(h)),
+            MenuItem::new("Set state…", Command::TodoMenu(h))
+                .icon(Icon::Checkbox)
+                .hint(key(&format!("{mod_key}↵"))),
+            MenuItem::new("Set priority…", Command::PriorityMenu(h)).icon(Icon::Flag),
+            MenuItem::new("Tags…", Command::TagsMenu(h)).icon(Icon::Tag),
             MenuItem::new(
                 "Schedule…",
                 Command::PickDate(DateTarget::Planning(h, Planning::Scheduled)),
-            ),
+            )
+            .icon(Icon::Schedule),
             MenuItem::new(
                 "Set deadline…",
                 Command::PickDate(DateTarget::Planning(h, Planning::Deadline)),
-            ),
+            )
+            .icon(Icon::Deadline),
             MenuItem::new(
                 "New heading below",
                 Command::Heading(h, HeadingOp::NewBelow),
             )
+            .icon(Icon::Add)
             .hint(key(&format!("{alt}↵"))),
             MenuItem::new("Move up", Command::Heading(h, HeadingOp::MoveUp))
+                .icon(Icon::ArrowUp)
                 .hint(key(&format!("{alt}↑"))),
             MenuItem::new("Move down", Command::Heading(h, HeadingOp::MoveDown))
+                .icon(Icon::ArrowDown)
                 .hint(key(&format!("{alt}↓"))),
-            MenuItem::new("Indent", Command::Heading(h, HeadingOp::Indent)).hint("Tab"),
-            MenuItem::new("Outdent", Command::Heading(h, HeadingOp::Outdent)).hint("⇧Tab"),
-            MenuItem::new("Fold / unfold", Command::Heading(h, HeadingOp::ToggleFold)),
-            MenuItem::new("Refile…", Command::Heading(h, HeadingOp::Refile)),
-            MenuItem::new("Archive", Command::Heading(h, HeadingOp::Archive)),
+            MenuItem::new("Indent", Command::Heading(h, HeadingOp::Indent))
+                .icon(Icon::ChevronRight)
+                .hint("Tab"),
+            MenuItem::new("Outdent", Command::Heading(h, HeadingOp::Outdent))
+                .icon(Icon::ChevronLeft)
+                .hint("⇧Tab"),
+            MenuItem::new("Fold / unfold", Command::Heading(h, HeadingOp::ToggleFold))
+                .icon(Icon::ChevronDown),
+            MenuItem::new("Refile…", Command::Heading(h, HeadingOp::Refile)).icon(Icon::ArrowMove),
+            MenuItem::new("Archive", Command::Heading(h, HeadingOp::Archive)).icon(Icon::Archive),
         ];
         self.open_menu(anchor, None, items, cx);
     }
@@ -786,8 +827,9 @@ impl OrgEditor {
                 let query = self.slash_query(start)?.to_string();
                 let items: Vec<MenuItem> = slash_matches(&query)
                     .into_iter()
-                    .map(|(_, name)| {
+                    .map(|(kind, name)| {
                         MenuItem::new(name, Command::Heading(0, HeadingOp::ToggleFold))
+                            .icon(slash_icon(kind))
                     })
                     .collect();
                 let anchor = self.anchor_below(start..start);
@@ -827,7 +869,16 @@ impl OrgEditor {
             }))
             .children(items.into_iter().enumerate().map(|(i, item)| {
                 let cmd = item.command.clone();
-                menu_row(i, item.label, item.hint, item.checked, i == selected, cx).on_mouse_down(
+                menu_row(
+                    i,
+                    item.label,
+                    item.hint,
+                    item.checked,
+                    item.icon,
+                    i == selected,
+                    cx,
+                )
+                .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -858,7 +909,7 @@ impl OrgEditor {
                     .child("Insert"),
             )
             .children(items.into_iter().enumerate().map(|(i, item)| {
-                menu_row(i, item.label, None, false, i == selected, cx).on_mouse_down(
+                menu_row(i, item.label, None, false, item.icon, i == selected, cx).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -1023,6 +1074,7 @@ fn menu_row(
     label: SharedString,
     hint: Option<SharedString>,
     checked: bool,
+    glyph: Option<Icon>,
     selected: bool,
     cx: &gpui::App,
 ) -> gpui::Stateful<gpui::Div> {
@@ -1038,11 +1090,16 @@ fn menu_row(
         .cursor_pointer()
         .when(selected, |s| s.bg(c.subtle_secondary))
         .when(!selected, |s| s.hover(move |s| s.bg(c.subtle_secondary)))
+        // Leading column: a check mark for the current choice, otherwise the item's icon.
         .child(
             div()
-                .w(px(12.))
-                .text_color(c.accent)
-                .child(if checked { "✓" } else { "" }),
+                .w(px(16.))
+                .flex_shrink_0()
+                .map(|d| match (checked, glyph) {
+                    (true, _) => d.child(icon(Icon::Checkmark, px(16.), c.accent)),
+                    (false, Some(g)) => d.child(icon(g, px(16.), c.text_secondary)),
+                    (false, None) => d,
+                }),
         )
         .child(div().flex_1().child(label))
         .children(hint.map(|h| {

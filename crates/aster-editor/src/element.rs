@@ -16,6 +16,8 @@ use gpui::{
     Style, TextAlign, TextRun, Window, fill, point, prelude::*, px, relative, size,
 };
 
+use aster_ui::icons::Icon;
+
 use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout};
 
 /// Width of the fold-arrow gutter left of the text.
@@ -49,6 +51,7 @@ pub struct PrepaintState {
     images: Vec<(Bounds<Pixels>, Arc<RenderImage>)>,
     selections: Vec<PaintQuad>,
     glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
+    icons: Vec<(Bounds<Pixels>, Icon, gpui::Hsla)>,
     cursor: Option<PaintQuad>,
     wrap_updates: Vec<(u64, usize)>,
 }
@@ -253,6 +256,7 @@ impl Element for EditorElement {
         let mut backgrounds = Vec::new();
         let mut overlays = Vec::new();
         let mut glyphs = Vec::new();
+        let mut icons = Vec::new();
         let text = editor.doc.text();
 
         for r in rows.iter().filter(|r| r.wrapped.is_some()) {
@@ -336,14 +340,19 @@ impl Element for EditorElement {
                 {
                     let folded = editor.folds.is_folded(start);
                     let (glyph, color) = if folded {
-                        ("▸", colors.text_secondary)
+                        (Icon::ChevronRight, colors.text_secondary)
                     } else {
-                        ("▾", colors.text_disabled)
+                        (Icon::ChevronDown, colors.text_disabled)
                     };
-                    let shaped = shape_glyph(window, glyph, color, font_size);
-                    let gy = bounds.top() + r.top + (lh - line_height) / 2.;
+                    // A 12 px chevron centered on the heading's first visual line.
+                    let size = px(12.);
+                    let gy = bounds.top() + r.top + (lh - size) / 2.;
                     let gx = (origin.x - px(18.)).max(bounds.left() + px(4.));
-                    glyphs.push((shaped, point(gx, gy), line_height));
+                    icons.push((
+                        Bounds::new(point(gx, gy), gpui::size(size, size)),
+                        glyph,
+                        color,
+                    ));
                     if folded {
                         let end = w
                             .position_for_index(r.display.text.len(), lh)
@@ -440,6 +449,7 @@ impl Element for EditorElement {
             images: image_paints,
             selections,
             glyphs,
+            icons,
             cursor: cursor_quad,
             wrap_updates,
         }
@@ -484,6 +494,17 @@ impl Element for EditorElement {
         for (b, img) in prepaint.images.drain(..) {
             window
                 .paint_image(b, Corners::all(px(6.)), img, 0, false)
+                .ok();
+        }
+        for (b, glyph, color) in prepaint.icons.drain(..) {
+            window
+                .paint_svg(
+                    b,
+                    glyph.path().into(),
+                    gpui::TransformationMatrix::unit(),
+                    color,
+                    cx,
+                )
                 .ok();
         }
         for (shaped, origin, lh) in &prepaint.glyphs {

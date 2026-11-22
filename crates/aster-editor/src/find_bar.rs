@@ -6,6 +6,7 @@ use gpui::{
 };
 
 use aster_ui::components::{self, ButtonKind};
+use aster_ui::icons::Icon;
 use aster_ui::{ActiveTheme, ramp};
 
 use crate::{EditorEvent, OrgEditor};
@@ -108,6 +109,15 @@ fn button(
     components::button(id, label, ButtonKind::Subtle, cx).on_click(on_click)
 }
 
+fn icon_btn(
+    cx: &App,
+    id: &'static str,
+    glyph: Icon,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    components::icon_button(id, glyph, cx).on_click(on_click)
+}
+
 fn input_box(editor: Entity<OrgEditor>, window: &Window, cx: &App) -> impl IntoElement {
     let focused = editor.focus_handle(cx).is_focused(window);
     components::text_box(focused, cx).w(px(260.)).child(editor)
@@ -137,11 +147,11 @@ impl Render for FindBar {
                     .text_color(colors.text_secondary)
                     .child(status),
             )
-            .child(button(cx, "find-prev", "↑", {
+            .child(icon_btn(cx, "find-prev", Icon::ArrowUp, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |b, cx| b.next(true, cx))
             }))
-            .child(button(cx, "find-next", "↓", {
+            .child(icon_btn(cx, "find-next", Icon::ArrowDown, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |b, cx| b.next(false, cx))
             }))
@@ -164,7 +174,7 @@ impl Render for FindBar {
                 },
             ))
             .child(div().flex_1())
-            .child(button(cx, "find-close", "✕", {
+            .child(icon_btn(cx, "find-close", Icon::Dismiss, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |_, cx| cx.emit(FindBarEvent::Dismissed))
             }));

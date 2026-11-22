@@ -157,59 +157,61 @@ fn main() -> anyhow::Result<()> {
         None => SAMPLE.to_owned(),
     };
 
-    Application::new().run(move |cx: &mut App| {
-        aster_ui::init(cx.window_appearance(), cx);
-        aster_editor::bind_keys(cx);
-        agenda_view::bind_keys(cx);
-        let mut keys = vec![
-            KeyBinding::new("secondary-o", Open, None),
-            KeyBinding::new("secondary-shift-o", OpenFolder, None),
-            KeyBinding::new("secondary-p", QuickOpen, None),
-            KeyBinding::new("secondary-shift-f", SearchAll, None),
-            KeyBinding::new("secondary-b", ToggleSidebar, None),
-            KeyBinding::new("secondary-shift-a", ShowAgenda, None),
-            KeyBinding::new("secondary-shift-t", ShowTodoList, None),
-            KeyBinding::new("secondary-n", Capture, None),
-            KeyBinding::new("secondary-shift-r", aster_editor::Refile, None),
-            KeyBinding::new("secondary-s", Save, None),
-            KeyBinding::new("secondary-shift-s", SaveAs, None),
-            KeyBinding::new("secondary-q", Quit, None),
-            KeyBinding::new("secondary-f", Find, None),
-            KeyBinding::new("secondary-g", FindNext, None),
-            KeyBinding::new("secondary-shift-p", ShowCommandPalette, None),
-            KeyBinding::new("secondary-shift-g", FindPrevious, None),
-        ];
-        keys.push(if cfg!(target_os = "macos") {
-            KeyBinding::new("cmd-alt-f", FindReplace, None)
-        } else {
-            KeyBinding::new("ctrl-h", FindReplace, None)
+    Application::new()
+        .with_assets(aster_ui::icons::Assets)
+        .run(move |cx: &mut App| {
+            aster_ui::init(cx.window_appearance(), cx);
+            aster_editor::bind_keys(cx);
+            agenda_view::bind_keys(cx);
+            let mut keys = vec![
+                KeyBinding::new("secondary-o", Open, None),
+                KeyBinding::new("secondary-shift-o", OpenFolder, None),
+                KeyBinding::new("secondary-p", QuickOpen, None),
+                KeyBinding::new("secondary-shift-f", SearchAll, None),
+                KeyBinding::new("secondary-b", ToggleSidebar, None),
+                KeyBinding::new("secondary-shift-a", ShowAgenda, None),
+                KeyBinding::new("secondary-shift-t", ShowTodoList, None),
+                KeyBinding::new("secondary-n", Capture, None),
+                KeyBinding::new("secondary-shift-r", aster_editor::Refile, None),
+                KeyBinding::new("secondary-s", Save, None),
+                KeyBinding::new("secondary-shift-s", SaveAs, None),
+                KeyBinding::new("secondary-q", Quit, None),
+                KeyBinding::new("secondary-f", Find, None),
+                KeyBinding::new("secondary-g", FindNext, None),
+                KeyBinding::new("secondary-shift-p", ShowCommandPalette, None),
+                KeyBinding::new("secondary-shift-g", FindPrevious, None),
+            ];
+            keys.push(if cfg!(target_os = "macos") {
+                KeyBinding::new("cmd-alt-f", FindReplace, None)
+            } else {
+                KeyBinding::new("ctrl-h", FindReplace, None)
+            });
+            cx.bind_keys(keys);
+            cx.set_menus(menus());
+
+            let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        // macOS: draw our own title area (docs/DESIGN.md §11).
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Aster".into()),
+                            appears_transparent: cfg!(target_os = "macos"),
+                            traffic_light_position: Some(point(px(14.), px(13.))),
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| cx.new(|cx| Workspace::new(text, file, root, window, cx)),
+                )
+                .expect("failed to open window");
+
+            window
+                .update(cx, |ws, window, cx| {
+                    window.focus(&ws.editor.focus_handle(cx));
+                    cx.activate(true);
+                })
+                .ok();
         });
-        cx.bind_keys(keys);
-        cx.set_menus(menus());
-
-        let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    // macOS: draw our own title area (docs/DESIGN.md §11).
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Aster".into()),
-                        appears_transparent: cfg!(target_os = "macos"),
-                        traffic_light_position: Some(point(px(14.), px(13.))),
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| cx.new(|cx| Workspace::new(text, file, root, window, cx)),
-            )
-            .expect("failed to open window");
-
-        window
-            .update(cx, |ws, window, cx| {
-                window.focus(&ws.editor.focus_handle(cx));
-                cx.activate(true);
-            })
-            .ok();
-    });
     Ok(())
 }

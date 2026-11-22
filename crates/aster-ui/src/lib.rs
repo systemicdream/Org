@@ -6,6 +6,7 @@
 
 pub mod accent;
 pub mod components;
+pub mod icons;
 
 use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, WindowAppearance, point, px};
 

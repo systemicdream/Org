@@ -217,3 +217,54 @@ pub fn caption(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_color(t.colors.text_tertiary)
         .child(text.into())
 }
+
+/// A 32 × 32 subtle button holding a 16 px icon (command bars, toolbars).
+pub fn icon_button(id: impl Into<ElementId>, icon: crate::icons::Icon, cx: &App) -> Stateful<Div> {
+    let c = cx.theme().colors;
+    div()
+        .id(id)
+        .size(px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(RADIUS_CONTROL)
+        .cursor_pointer()
+        .hover(move |s| s.bg(c.subtle_secondary))
+        .active(move |s| s.bg(c.subtle_tertiary))
+        .child(crate::icons::icon(icon, px(16.), c.text_secondary))
+}
+
+/// A Fluent tooltip: small flyout surface with body text, elevation 8.
+pub struct Tooltip {
+    text: SharedString,
+}
+
+impl Tooltip {
+    /// Build a tooltip view for `.tooltip(...)`.
+    pub fn text(
+        text: impl Into<SharedString>,
+        _: &mut gpui::Window,
+        cx: &mut App,
+    ) -> gpui::AnyView {
+        let text = text.into();
+        cx.new(|_| Tooltip { text }).into()
+    }
+}
+
+impl gpui::Render for Tooltip {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let t = cx.theme();
+        div()
+            .px_2()
+            .py_1()
+            .bg(t.colors.flyout)
+            .border_1()
+            .border_color(t.colors.stroke_surface)
+            .rounded(RADIUS_CONTROL)
+            .shadow(t.shadow(Elevation::Tooltip))
+            .text_size(ramp::CAPTION.size)
+            .line_height(ramp::CAPTION.line_height)
+            .text_color(t.colors.text_primary)
+            .child(self.text.clone())
+    }
+}

@@ -1,7 +1,8 @@
 //! Capture: jot a task, note, or journal entry without leaving what you're doing.
 
 use aster_editor::{EditorEvent, OrgEditor};
-use aster_ui::{components, ramp};
+use aster_ui::icons::{Icon, icon};
+use aster_ui::{ActiveTheme, components, ramp};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Subscription, Window,
     div, prelude::*, px,
@@ -105,6 +106,7 @@ impl Render for CaptureDialog {
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(icon(Icon::NoteAdd, px(20.), cx.theme().colors.accent).mr_2())
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
