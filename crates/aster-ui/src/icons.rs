@@ -62,6 +62,7 @@ pub enum Icon {
     TextSize,
     Keyboard,
     Reset,
+    Transparency,
 }
 
 impl Icon {
@@ -120,6 +121,7 @@ impl Icon {
             Icon::TextSize => "icons/text_font_size.svg",
             Icon::Keyboard => "icons/keyboard.svg",
             Icon::Reset => "icons/arrow_reset.svg",
+            Icon::Transparency => "icons/blur.svg",
         }
     }
 }
@@ -313,6 +315,7 @@ const ICONS: &[(&str, &[u8])] = &[
         "icons/arrow_reset.svg",
         include_bytes!("../assets/icons/arrow_reset.svg"),
     ),
+    ("icons/blur.svg", include_bytes!("../assets/icons/blur.svg")),
 ];
 
 /// GPUI asset source for Aster's bundled assets (icons).

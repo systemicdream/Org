@@ -15,6 +15,7 @@ mod input;
 mod popup;
 mod preview;
 mod spans;
+pub mod vim;
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -420,6 +421,7 @@ pub struct OrgEditor {
     known_tags: Vec<String>,
     /// Open menu, date picker, tag input or slash menu.
     popup: Option<Popup>,
+    vim: vim::VimState,
     /// Where the last popup was shown, so follow-up popups appear in the same place.
     last_popup_anchor: Point<Pixels>,
     _subscriptions: Vec<Subscription>,
@@ -503,6 +505,7 @@ impl OrgEditor {
             blink_task: None,
             known_tags: Vec::new(),
             popup: None,
+            vim: vim::VimState::default(),
             last_popup_anchor: Point::default(),
             _subscriptions: subscriptions,
         };
@@ -2208,6 +2211,7 @@ impl OrgEditor {
         self.close_popup(window, cx);
         window.focus(&self.focus_handle);
         self.goal_x = None;
+        self.vim_on_click();
 
         if self.mode == EditorMode::Full && self.click_widget(event, window, cx) {
             return;
@@ -2360,13 +2364,23 @@ impl OrgEditor {
 
 impl Render for OrgEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // With Vim keys on, the mode is part of the key context ("OrgEditor && vim_normal").
+        let mut key_context = gpui::KeyContext::new_with_defaults();
+        key_context.add(KEY_CONTEXT);
+        if let Some(mode) = self.vim_mode(cx) {
+            key_context.add(match mode {
+                vim::VimMode::Normal => "vim_normal",
+                vim::VimMode::Insert => "vim_insert",
+                vim::VimMode::Visual | vim::VimMode::VisualLine => "vim_visual",
+            });
+        }
         let base = div()
             .id(if self.mode == EditorMode::Full {
                 "org-editor"
             } else {
                 "org-input"
             })
-            .key_context(KEY_CONTEXT)
+            .key_context(key_context)
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -2416,7 +2430,8 @@ impl Render for OrgEditor {
                 .w_full()
                 .overflow_hidden()
                 .child(EditorElement::new(cx.entity())),
-            EditorMode::Full => base
+            EditorMode::Full => self
+                .vim_actions(base, cx)
                 .on_action(cx.listener(Self::toggle_done))
                 .on_action(cx.listener(Self::cycle_todo_backward))
                 .on_action(cx.listener(Self::insert_heading))

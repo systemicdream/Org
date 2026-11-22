@@ -189,6 +189,34 @@ pub fn button(
     }
 }
 
+/// A Fluent toggle switch (40 × 20): off is an outlined track with a dark knob; on is an
+/// accent track with a knob in `text_on_accent`. Disabled switches are dimmed.
+pub fn toggle_switch(id: impl Into<ElementId>, on: bool, enabled: bool, cx: &App) -> Stateful<Div> {
+    let c = cx.theme().colors;
+    let (track, border, knob) = if !enabled {
+        (c.control, c.text_disabled, c.text_disabled)
+    } else if on {
+        (c.accent, c.accent, c.text_on_accent)
+    } else {
+        (c.control_secondary, c.text_secondary, c.text_secondary)
+    };
+    div()
+        .id(id)
+        .w(px(40.))
+        .h(px(20.))
+        .flex_shrink_0()
+        .rounded(px(10.))
+        .bg(track)
+        .border_1()
+        .border_color(border)
+        .flex()
+        .items_center()
+        .px(px(3.))
+        .when(on, |d| d.justify_end())
+        .when(enabled, |d| d.cursor_pointer())
+        .child(div().size(px(12.)).rounded(px(6.)).bg(knob))
+}
+
 /// A small inline pill (TODO keyword, tag, date) with the given colors.
 pub fn pill(fg: Hsla, bg: Hsla) -> Div {
     div().px_1().rounded(RADIUS_CONTROL).text_color(fg).bg(bg)

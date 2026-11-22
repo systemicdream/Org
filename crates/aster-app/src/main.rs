@@ -2,29 +2,33 @@
 //!
 //! Usage: `aster [folder | file.org]`. A folder becomes the workspace; a file opens with its
 //! folder as the workspace. Without arguments Aster reopens the last folder and file, or shows
-//! a welcome sample.
+//! the first-run screen.
 
 mod agenda_view;
 mod capture;
+mod file_actions;
+mod files;
 mod keymap;
+mod name_dialog;
 mod picker;
 mod session;
 mod settings;
 mod settings_view;
 mod sidebar;
 mod watch;
+mod welcome;
 mod workspace;
 
 use std::path::PathBuf;
 
 use gpui::{
-    App, Application, Bounds, Focusable, Menu, MenuItem, SystemMenuType, TitlebarOptions,
-    WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
+    App, Application, Bounds, Menu, MenuItem, SystemMenuType, TitlebarOptions, WindowBounds,
+    WindowOptions, actions, point, prelude::*, px, size,
 };
 
 use session::Session;
 use settings::Settings;
-use workspace::{SAMPLE, Workspace, read_org};
+use workspace::{Workspace, read_org};
 
 actions!(
     aster,
@@ -161,13 +165,14 @@ fn main() -> anyhow::Result<()> {
     let text = match &file {
         Some(p) if p.exists() => read_org(p)?,
         Some(_) => String::new(),
-        None => SAMPLE.to_owned(),
+        None => String::new(),
     };
 
     Application::new()
         .with_assets(aster_ui::icons::Assets)
         .run(move |cx: &mut App| {
             let settings = Settings::load();
+            let window_background = settings.window_background();
             aster_ui::init(cx.window_appearance(), settings.theme_prefs(), cx);
             keymap::apply(settings.keymap, cx);
             cx.set_global(settings);
@@ -177,6 +182,7 @@ fn main() -> anyhow::Result<()> {
                 .open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_background,
                         // macOS: draw our own title area (docs/DESIGN.md §11).
                         titlebar: Some(TitlebarOptions {
                             title: Some("Aster".into()),
@@ -191,7 +197,7 @@ fn main() -> anyhow::Result<()> {
 
             window
                 .update(cx, |ws, window, cx| {
-                    window.focus(&ws.editor.focus_handle(cx));
+                    ws.focus_main(window, cx);
                     cx.activate(true);
                 })
                 .ok();

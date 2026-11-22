@@ -17,9 +17,15 @@ pub fn apply(keymap: Keymap, cx: &mut App) {
     agenda_view::bind_keys(cx);
     settings_view::bind_keys(cx);
     cx.bind_keys(standard());
-    if keymap == Keymap::Emacs {
-        cx.bind_keys(emacs());
+    match keymap {
+        Keymap::Standard => {}
+        Keymap::Emacs => cx.bind_keys(emacs()),
+        Keymap::Vim => {
+            cx.bind_keys(aster_editor::vim::bindings());
+            cx.bind_keys(vim());
+        }
     }
+    aster_editor::vim::set_enabled(keymap == Keymap::Vim, cx);
     cx.set_menus(menus());
 }
 
@@ -101,6 +107,36 @@ fn emacs() -> Vec<KeyBinding> {
         KeyBinding::new("alt-x", ShowCommandPalette, None),
     ]
 }
+
+/// App commands from Vim's Normal mode: search, and `:` for commands.
+fn vim() -> Vec<KeyBinding> {
+    let n = Some("OrgEditor && vim_normal");
+    vec![
+        KeyBinding::new("/", Find, n),
+        KeyBinding::new("n", FindNext, n),
+        KeyBinding::new("shift-n", FindPrevious, n),
+        KeyBinding::new(":", ShowCommandPalette, n),
+        KeyBinding::new("shift-;", ShowCommandPalette, n),
+    ]
+}
+
+/// The main Vim keys, for the settings page: (keys, what they do).
+pub const VIM_SUMMARY: &[(&str, &str)] = &[
+    ("i a I A o O", "Insert mode (Esc returns to Normal mode)"),
+    ("h j k l w b e 0 ^ $ gg G", "Move"),
+    ("v V", "Visual mode by character or by line; then d y c"),
+    (
+        "x dd dw D cc cw C yy p P J",
+        "Delete, change, yank (copy), paste, join",
+    ),
+    ("u Ctrl-r", "Undo, redo"),
+    (
+        "TAB S-TAB za zM zR",
+        "Fold the heading; fold or unfold everything",
+    ),
+    (">> << t", "Demote, promote, cycle the TODO state"),
+    ("/ n N :", "Find, next, previous, all commands"),
+];
 
 /// A few Emacs bindings to show on the settings page: (keys, what they do).
 pub const EMACS_SUMMARY: &[(&str, &str)] = &[

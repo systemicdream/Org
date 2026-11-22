@@ -33,8 +33,12 @@ or shadow in a view** — use the token, so light/dark themes and future accent 
 | **Flyout (Acrylic)** | Menus, pickers, date picker, command palette, capture | `#FCFCFC` | `#2C2C2C` |
 | **Smoke** | Dims the app behind modal dialogs | `#000000` @ 30 % | `#000000` @ 30 % |
 
-- On macOS the base layer may use the system blur (GPUI's blurred window background) to
-  approximate Mica; elsewhere it's the solid color above.
+- **Transparency effects** (on by default, Settings → Transparency effects): the window gets a
+  blurred background and the base layer becomes translucent (72 % light, 80 % dark), so the
+  desktop shows through the sidebar and title area much like Mica. The content layer stays
+  opaque for reading. Supported on macOS and on Wayland compositors that blur behind windows
+  (KDE Plasma, Hyprland); elsewhere (e.g. GNOME) the setting is unavailable and the base is
+  solid, since an unblurred see-through window hurts legibility.
 - Flyouts and dialogs are opaque in Aster (true acrylic blur isn't available in-app).
 
 ## 3. Color tokens
@@ -207,6 +211,9 @@ title (Body) over a description (Caption, `text.secondary`), with the control ri
 in a group sit 3 px apart under a Body Strong group header. Changes apply and save immediately:
 there is no OK/Cancel. Controls never shift under the pointer as a value changes (reserve space
 for buttons that come and go, like "reset").
+
+**Toggle switch** — 40 × 20 px pill. Off: `control.secondary` track with a `text.secondary`
+outline and knob. On: `accent.default` track with a `text.on_accent` knob. Disabled: `text.disabled`.
 
 **Scrollbars** — thin (2 px) at rest, widening on hover, `text.tertiary`; no track.
 

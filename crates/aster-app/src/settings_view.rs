@@ -10,7 +10,7 @@ use gpui::{
     MouseButton, Rgba, Subscription, Window, actions, div, prelude::*, px,
 };
 
-use crate::keymap::EMACS_SUMMARY;
+use crate::keymap::{EMACS_SUMMARY, VIM_SUMMARY};
 use crate::settings::{
     self, AppearancePref, CaptureKind, CaptureTemplate, FONT_SIZE_DEFAULT, FONT_SIZE_MAX,
     FONT_SIZE_MIN, Keymap, Settings,
@@ -42,16 +42,59 @@ pub struct SettingsView {
     focus_handle: FocusHandle,
     templates: Vec<TemplateRow>,
     _subscriptions: Vec<Subscription>,
+    /// The custom accent's hex field, and whether it's showing.
+    custom_hex: Entity<OrgEditor>,
+    show_custom: bool,
+    _custom_subscription: Subscription,
+}
+
+/// Whether `accent` (a saved `#rrggbb`) is one of the preset swatches.
+fn is_preset(accent: &str) -> bool {
+    aster_ui::accent::parse_hex(accent).is_some_and(|a| {
+        let hex = aster_ui::accent::to_hex(a);
+        aster_ui::accent::SWATCHES
+            .iter()
+            .any(|(_, c)| aster_ui::accent::to_hex(gpui::rgb(*c)) == hex)
+    })
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
 
 impl SettingsView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let accent = cx.global::<Settings>().accent.clone();
+        let custom_hex = cx.new(|cx| {
+            let mut e = OrgEditor::single_line("#0078d4", window, cx);
+            e.set_text(accent.as_deref().unwrap_or(""), cx);
+            e
+        });
+        let custom_sub = cx.subscribe_in(
+            &custom_hex,
+            window,
+            |this, input, event: &EditorEvent, window, cx| match event {
+                EditorEvent::Edited => {
+                    // Apply as soon as it's a valid color.
+                    let text = input.read(cx).text().trim().to_string();
+                    if let Some(c) = aster_ui::accent::parse_hex(&text) {
+                        let hex = aster_ui::accent::to_hex(c);
+                        this.change(cx, move |s| s.accent = Some(hex));
+                    }
+                    cx.notify();
+                }
+                EditorEvent::Cancel | EditorEvent::Confirm { .. } => {
+                    window.focus(&this.focus_handle);
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
         let mut view = Self {
             focus_handle: cx.focus_handle(),
             templates: Vec::new(),
             _subscriptions: Vec::new(),
+            show_custom: accent.as_deref().is_some_and(|a| !is_preset(a)),
+            custom_hex,
+            _custom_subscription: custom_sub,
         };
         view.load_templates(window, cx);
         view
@@ -227,6 +270,7 @@ impl SettingsView {
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 let value = value.clone();
+                this.show_custom = false;
                 this.change(cx, |s| s.accent = value);
             }))
             .into_any_element()
@@ -370,6 +414,84 @@ impl Render for SettingsView {
                 .is_some_and(|a| aster_ui::accent::to_hex(a) == aster_ui::accent::to_hex(color));
             swatches.push(self.swatch(i + 1, Some(color), name, selected, cx));
         }
+        // "Custom": shows the custom color when one is in use, otherwise a "+".
+        let custom = settings.accent.as_deref().filter(|a| !is_preset(a));
+        let custom_fill: Option<gpui::Hsla> =
+            custom.and_then(aster_ui::accent::parse_hex).map(Into::into);
+        swatches.push(
+            div()
+                .id("swatch-custom")
+                .size(px(32.))
+                .rounded(RADIUS_CONTROL)
+                .border_2()
+                .border_color(if custom.is_some() {
+                    c.text_primary
+                } else {
+                    c.stroke_control_strong
+                })
+                .p(px(2.))
+                .cursor_pointer()
+                .tooltip(|window, cx| components::Tooltip::text("Custom color", window, cx))
+                .child(
+                    div()
+                        .size_full()
+                        .rounded(px(2.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when_some(custom_fill, |d, fill| {
+                            d.bg(fill).child(icon(
+                                Icon::Edit,
+                                px(14.),
+                                aster_ui::accent::on_accent(fill),
+                            ))
+                        })
+                        .when(custom_fill.is_none(), |d| {
+                            d.child(icon(Icon::Add, px(16.), c.text_secondary))
+                        }),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.show_custom = true;
+                    let current = cx.global::<Settings>().accent.clone().unwrap_or_default();
+                    this.custom_hex.update(cx, |e, cx| {
+                        e.set_text(&current, cx);
+                        e.select_range(0..usize::MAX, cx);
+                    });
+                    window.focus(&this.custom_hex.focus_handle(cx));
+                    cx.notify();
+                }))
+                .into_any_element(),
+        );
+        let hex_text = self.custom_hex.read(cx).text().trim().to_string();
+        let hex_invalid = !hex_text.is_empty() && aster_ui::accent::parse_hex(&hex_text).is_none();
+        let custom_row = self.show_custom.then(|| {
+            div()
+                .pl(px(36.))
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(components::caption("Custom color", cx).text_color(c.text_secondary))
+                .child(
+                    components::text_box(self.custom_hex.focus_handle(cx).is_focused(window), cx)
+                        .w(px(120.))
+                        .child(self.custom_hex.clone()),
+                )
+                .child(
+                    components::caption(
+                        if hex_invalid {
+                            "Use a hex color like #0078d4"
+                        } else {
+                            "Any color works: Aster adjusts it so text stays readable"
+                        },
+                        cx,
+                    )
+                    .text_color(if hex_invalid {
+                        c.critical
+                    } else {
+                        c.text_tertiary
+                    }),
+                )
+        });
         let accent = card_frame(cx).child(
             div()
                 .px_4()
@@ -401,8 +523,24 @@ impl Render for SettingsView {
                         .flex_wrap()
                         .gap_1()
                         .children(swatches),
-                ),
+                )
+                .children(custom_row),
         );
+
+        let supported = settings::transparency_supported();
+        let transparency = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(if settings.translucent() { "On" } else { "Off" })
+            .child(
+                components::toggle_switch("transparency", settings.translucent(), supported, cx)
+                    .when(supported, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| {
+                            this.change(cx, |s| s.transparency = !s.transparency)
+                        }))
+                    }),
+            );
 
         let size = settings.font_size;
         let font_size = div()
@@ -450,12 +588,21 @@ impl Render for SettingsView {
 
         let keymap = Self::choice(
             "keymap",
-            &[("Standard", Keymap::Standard), ("Emacs", Keymap::Emacs)],
+            &[
+                ("Standard", Keymap::Standard),
+                ("Emacs", Keymap::Emacs),
+                ("Vim", Keymap::Vim),
+            ],
             settings.keymap,
             cx,
             |s, v| s.keymap = v,
         );
-        let emacs_help = (settings.keymap == Keymap::Emacs).then(|| {
+        let summary = match settings.keymap {
+            Keymap::Standard => None,
+            Keymap::Emacs => Some(EMACS_SUMMARY),
+            Keymap::Vim => Some(VIM_SUMMARY),
+        };
+        let emacs_help = summary.map(|summary| {
             card_frame(cx).mt(px(-3.)).px_4().py_3().child(
                 div()
                     .pl(px(36.))
@@ -464,7 +611,7 @@ impl Render for SettingsView {
                     .gap_1()
                     .text_size(ramp::CAPTION.size)
                     .line_height(ramp::CAPTION.line_height)
-                    .children(EMACS_SUMMARY.iter().map(|(keys, what)| {
+                    .children(summary.iter().map(|(keys, what)| {
                         div()
                             .flex()
                             .gap_4()
@@ -564,6 +711,17 @@ impl Render for SettingsView {
                         cx,
                     ))
                     .child(accent)
+                    .child(Self::card(
+                        Icon::Transparency,
+                        "Transparency effects",
+                        if settings::transparency_supported() {
+                            "Let the desktop show through the window's background"
+                        } else {
+                            "Not available on this desktop (it doesn't blur behind windows)"
+                        },
+                        transparency,
+                        cx,
+                    ))
                     .child(group_header("Editor"))
                     .child(Self::card(
                         Icon::TextSize,
@@ -575,7 +733,7 @@ impl Render for SettingsView {
                     .child(Self::card(
                         Icon::Keyboard,
                         "Keyboard shortcuts",
-                        "Emacs adds Org mode's keys on top of the standard ones",
+                        "Emacs or Vim keys, on top of the standard ones",
                         keymap,
                         cx,
                     ))

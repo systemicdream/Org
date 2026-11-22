@@ -16,6 +16,8 @@ use gpui::{
 
 use crate::agenda_view::{AgendaEvent, AgendaView, Mode as AgendaMode};
 use crate::capture::{CaptureDialog, CaptureEvent, CaptureTime, capture_op};
+use crate::file_actions::TreeMenu;
+use crate::name_dialog::NameDialog;
 use crate::picker::{PickTarget, Picker, PickerEvent, PickerItem};
 use crate::session::Session;
 use crate::settings::{CaptureTemplate, Settings};
@@ -44,7 +46,7 @@ enum MainView {
 pub struct Workspace {
     pub(crate) editor: Entity<OrgEditor>,
     pub(crate) path: Option<PathBuf>,
-    dirty: bool,
+    pub(crate) dirty: bool,
     find_bar: Option<Entity<FindBar>>,
     autosave: Option<Task<()>>,
     _editor_subscription: Subscription,
@@ -70,6 +72,12 @@ pub struct Workspace {
     refile_source: Option<(PathBuf, usize)>,
     toast: Option<(SharedString, bool)>,
     toast_task: Option<Task<()>>,
+    pub(crate) tree_menu: Option<TreeMenu>,
+    pub(crate) name_dialog: Option<(Entity<NameDialog>, Subscription)>,
+    /// The welcome sample is showing (unsaved, not a file).
+    sample: bool,
+    /// Focus for the window itself, so shortcuts work when no note is open.
+    focus_handle: gpui::FocusHandle,
 }
 
 impl Workspace {
@@ -104,6 +112,10 @@ impl Workspace {
             refile_source: None,
             toast: None,
             toast_task: None,
+            tree_menu: None,
+            name_dialog: None,
+            sample: false,
+            focus_handle: cx.focus_handle(),
         };
         window.set_window_title(&ws.title());
         // Follow the system's light/dark setting.
@@ -137,7 +149,7 @@ impl Workspace {
     }
 
     /// Tell the editor which folder relative links and images resolve against.
-    fn sync_base_dir(&self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_base_dir(&self, cx: &mut Context<Self>) {
         let dir = self
             .path
             .as_deref()
@@ -164,27 +176,84 @@ impl Workspace {
         (editor, sub)
     }
 
-    fn title(&self) -> String {
-        let name = self
-            .path
-            .as_deref()
-            .and_then(Path::file_name)
-            .map_or("Welcome (unsaved sample)".into(), |n| {
-                n.to_string_lossy().into_owned()
-            });
+    pub(crate) fn title(&self) -> String {
+        let name = match (&self.path, self.sample) {
+            (Some(p), _) => p.file_name().map(|n| n.to_string_lossy().into_owned()),
+            (None, true) => Some("Welcome (sample)".into()),
+            (None, false) => None,
+        };
         let folder = self
             .root
             .as_deref()
             .and_then(Path::file_name)
-            .map(|n| format!(" — {}", n.to_string_lossy()))
-            .unwrap_or_default();
+            .map(|n| n.to_string_lossy().into_owned());
+        let parts: Vec<String> = name.into_iter().chain(folder).collect();
+        if parts.is_empty() {
+            return "Aster".into();
+        }
         format!(
-            "{}{name}{folder} — Aster",
-            if self.dirty { "● " } else { "" }
+            "{}{} — Aster",
+            if self.dirty { "● " } else { "" },
+            parts.join(" — ")
         )
     }
 
-    fn save_session(&self) {
+    /// Drop a pending autosave (the edits stay in the editor, marked unsaved).
+    pub(crate) fn cancel_autosave(&mut self) {
+        self.autosave = None;
+    }
+
+    /// Whether a document is open in the editor (a file, or the sample).
+    pub(crate) fn has_document(&self) -> bool {
+        self.path.is_some() || self.sample
+    }
+
+    /// Put focus back on whatever fills the content area.
+    pub(crate) fn focus_main(&self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.view, &self.agenda, &self.settings) {
+            (MainView::Agenda, Some((v, _)), _) => window.focus(&v.focus_handle(cx)),
+            (MainView::Settings, _, Some((v, _))) => window.focus(&v.focus_handle(cx)),
+            _ if self.has_document() => window.focus(&self.editor.focus_handle(cx)),
+            _ => window.focus(&self.focus_handle),
+        }
+    }
+
+    /// Close the open file (e.g. it was deleted) and show the folder's empty state.
+    pub(crate) fn close_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.autosave = None;
+        self.dirty = false;
+        self.close_find_bar(window, cx);
+        let (editor, sub) = Self::make_editor(String::new(), window, cx);
+        self.editor = editor;
+        self._editor_subscription = sub;
+        self.path = None;
+        self.sample = false;
+        self.sync_base_dir(cx);
+        window.set_window_title(&self.title());
+        self.save_session();
+        self.focus_main(window, cx);
+        cx.notify();
+    }
+
+    /// Show the welcome sample (unsaved) in the editor.
+    pub(crate) fn show_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dirty {
+            self.save_now(window, cx);
+        }
+        let (editor, sub) = Self::make_editor(SAMPLE.to_string(), window, cx);
+        self.editor = editor;
+        self._editor_subscription = sub;
+        self.path = None;
+        self.sample = true;
+        self.dirty = false;
+        self.view = MainView::Editor;
+        self.sync_base_dir(cx);
+        window.set_window_title(&self.title());
+        window.focus(&self.editor.focus_handle(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn save_session(&self) {
         Session {
             root: self.root.clone(),
             file: self.path.clone(),
@@ -315,7 +384,7 @@ impl Workspace {
 
     fn show_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.view = MainView::Editor;
-        window.focus(&self.editor.focus_handle(cx));
+        self.focus_main(window, cx);
         cx.notify();
     }
 
@@ -427,12 +496,12 @@ impl Workspace {
                 CaptureEvent::Capture(template, text) => {
                     let (template, text) = (template.clone(), text.clone());
                     this.capture = None;
-                    window.focus(&this.editor.focus_handle(cx));
+                    this.focus_main(window, cx);
                     this.save_capture(template, &text, cx);
                 }
                 CaptureEvent::Dismissed => {
                     this.capture = None;
-                    window.focus(&this.editor.focus_handle(cx));
+                    this.focus_main(window, cx);
                     cx.notify();
                 }
             },
@@ -688,7 +757,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -738,6 +807,7 @@ impl Workspace {
             if let Ok(Ok(Some(path))) = rx.await {
                 this.update_in(cx, |ws, window, cx| {
                     ws.path = Some(path);
+                    ws.sample = false;
                     ws.sync_base_dir(cx);
                     ws.save_now(window, cx);
                     ws.save_session();
@@ -831,6 +901,7 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = Some(path.clone());
+        self.sample = false;
         self.sync_base_dir(cx);
         self.sync_known_tags(cx);
         self.dirty = false;
@@ -856,7 +927,7 @@ impl Workspace {
     }
 
     /// Expand the folders containing `path` in the file tree.
-    fn reveal_in_tree(&mut self, path: &Path) {
+    pub(crate) fn reveal_in_tree(&mut self, path: &Path) {
         let Some(root) = &self.root else { return };
         let Ok(rel) = path.strip_prefix(root) else {
             return;
@@ -998,7 +1069,7 @@ impl Workspace {
                 while let Ok(p) = changes.try_recv() {
                     batch.push(p);
                 }
-                let paths = watch::org_paths(batch);
+                let paths = watch::relevant_paths(batch);
                 if paths.is_empty() {
                     continue;
                 }
@@ -1023,8 +1094,13 @@ impl Workspace {
         self.index.update(cx, |index, cx| {
             let mut changed = false;
             for p in &paths {
-                if index.covers(p) {
-                    changed |= index.update_file(p);
+                if aster_index::is_org_file(p) {
+                    if index.covers(p) {
+                        changed |= index.update_file(p);
+                    }
+                } else {
+                    // A folder was created, renamed or deleted.
+                    changed |= index.rescan_under(p);
                 }
             }
             if changed {
@@ -1125,7 +1201,7 @@ impl Workspace {
     fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refile_source = None;
         if self.picker.take().is_some() {
-            window.focus(&self.editor.focus_handle(cx));
+            self.focus_main(window, cx);
             cx.notify();
         }
     }
@@ -1135,7 +1211,7 @@ impl Workspace {
             PickTarget::Command(i) => {
                 if let Some((_, action)) = self.commands.get(i) {
                     let action = action.boxed_clone();
-                    window.focus(&self.editor.focus_handle(cx));
+                    self.focus_main(window, cx);
                     window.dispatch_action(action, cx);
                 }
             }
@@ -1522,8 +1598,13 @@ impl Render for Workspace {
         let main = match (self.view, &self.agenda, &self.settings) {
             (MainView::Agenda, Some((agenda, _)), _) => agenda.clone().into_any_element(),
             (MainView::Settings, _, Some((settings, _))) => settings.clone().into_any_element(),
-            _ => self.editor.clone().into_any_element(),
+            _ if self.has_document() => self.editor.clone().into_any_element(),
+            _ if self.root.is_some() => self.render_empty_state(cx),
+            _ => self.render_first_run(cx),
         };
+        let vim_mode = (self.view == MainView::Editor && self.has_document())
+            .then(|| self.editor.read(cx).vim_mode(cx))
+            .flatten();
         let text_size = cx.global::<Settings>().font_size;
         let line_height = cx.global::<Settings>().line_height();
 
@@ -1531,6 +1612,7 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
+            .track_focus(&self.focus_handle)
             .bg(colors.base)
             .text_color(colors.text_primary)
             .text_size(px(text_size))
@@ -1570,6 +1652,7 @@ impl Render for Workspace {
                             .h_full()
                             .flex()
                             .flex_col()
+                            .relative()
                             .overflow_hidden()
                             .bg(colors.layer)
                             .border_t_1()
@@ -1582,7 +1665,29 @@ impl Render for Workspace {
                                     .clone()
                                     .filter(|_| self.view == MainView::Editor),
                             )
-                            .child(div().flex_1().min_h_0().child(main)),
+                            .child(div().flex_1().min_h_0().child(main))
+                            .children(vim_mode.map(|mode| {
+                                // Vim's mode, as a status pill in the corner.
+                                div().absolute().bottom(px(12.)).right(px(16.)).child(
+                                    components::pill(
+                                        if mode == aster_editor::vim::VimMode::Normal {
+                                            colors.text_secondary
+                                        } else {
+                                            colors.text_on_accent
+                                        },
+                                        if mode == aster_editor::vim::VimMode::Normal {
+                                            colors.subtle_secondary
+                                        } else {
+                                            colors.accent
+                                        },
+                                    )
+                                    .px_2()
+                                    .text_size(ramp::CAPTION.size)
+                                    .line_height(ramp::CAPTION.line_height)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(mode.label()),
+                                )
+                            })),
                     ),
             )
             .children(self.capture.as_ref().map(|(c, _)| {
@@ -1598,6 +1703,20 @@ impl Render for Workspace {
                 )
                 .with_priority(2)
             }))
+            .children(self.name_dialog.as_ref().map(|(d, _)| {
+                gpui::deferred(
+                    div()
+                        .absolute()
+                        .top(px(120.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(d.clone()),
+                )
+                .with_priority(2)
+            }))
+            .children(self.render_tree_menu(cx))
             .children(self.toast.clone().map(|(msg, error)| {
                 // InfoBar-style toast (docs/DESIGN.md §7).
                 let theme = cx.theme();

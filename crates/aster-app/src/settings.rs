@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use aster_ui::{Appearance, ThemePrefs};
-use gpui::{App, Global};
+use gpui::{App, Global, WindowBackgroundAppearance};
 use serde::{Deserialize, Serialize};
 
 pub const FONT_SIZE_MIN: f32 = 12.;
@@ -28,6 +28,8 @@ pub enum Keymap {
     Standard,
     /// Standard, plus Emacs/Org-style bindings in the editor.
     Emacs,
+    /// Standard, plus modal Vim editing (Normal/Insert/Visual) in the editor.
+    Vim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +138,8 @@ pub struct Settings {
     /// `#rrggbb`, or `None` for the system accent.
     pub accent: Option<String>,
     pub font_size: f32,
+    /// Mica-style translucent window background, where the desktop supports blur.
+    pub transparency: bool,
     pub keymap: Keymap,
     pub capture_templates: Vec<CaptureTemplate>,
 }
@@ -146,6 +150,7 @@ impl Default for Settings {
             appearance: AppearancePref::System,
             accent: None,
             font_size: FONT_SIZE_DEFAULT,
+            transparency: true,
             keymap: Keymap::Standard,
             capture_templates: default_templates(),
         }
@@ -153,6 +158,22 @@ impl Default for Settings {
 }
 
 impl Global for Settings {}
+
+/// Whether the window can have a blurred background: macOS, and Wayland compositors known to
+/// blur behind windows (KDE Plasma via its blur protocol; Hyprland by its own rules). On others
+/// (e.g. GNOME) a translucent window would show the desktop unblurred, so Aster stays opaque.
+pub fn transparency_supported() -> bool {
+    if cfg!(target_os = "macos") {
+        return true;
+    }
+    if cfg!(target_os = "linux") {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        return desktop
+            .split(':')
+            .any(|d| d.eq_ignore_ascii_case("KDE") || d.eq_ignore_ascii_case("Hyprland"));
+    }
+    false
+}
 
 /// `$ASTER_SETTINGS_FILE` (for tests and multiple setups) or the platform config dir.
 fn settings_path() -> Option<PathBuf> {
@@ -207,6 +228,20 @@ impl Settings {
                 AppearancePref::Dark => Some(Appearance::Dark),
             },
             accent: self.accent.as_deref().and_then(aster_ui::accent::parse_hex),
+            translucent: self.translucent(),
+        }
+    }
+
+    /// Whether the window background is translucent (the setting, where it's supported).
+    pub fn translucent(&self) -> bool {
+        self.transparency && transparency_supported()
+    }
+
+    pub fn window_background(&self) -> WindowBackgroundAppearance {
+        if self.translucent() {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
         }
     }
 
@@ -228,6 +263,16 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut Settings)) -> anyhow::Result<()>
         crate::keymap::apply(settings.keymap, cx);
     }
     aster_ui::set_prefs(settings.theme_prefs(), cx);
+    if settings.window_background() != before.window_background() {
+        let background = settings.window_background();
+        for window in cx.windows() {
+            window
+                .update(cx, |_, window, _| {
+                    window.set_background_appearance(background)
+                })
+                .ok();
+        }
+    }
     let result = settings.save();
     cx.set_global(settings);
     cx.refresh_windows();

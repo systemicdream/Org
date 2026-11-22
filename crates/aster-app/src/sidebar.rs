@@ -8,6 +8,7 @@ use aster_ui::{ActiveTheme, components, ramp};
 use gpui::{Context, MouseButton, SharedString, div, prelude::*, px};
 
 use crate::agenda_view::Mode;
+use crate::file_actions::TreeTarget;
 
 use crate::workspace::Workspace;
 
@@ -24,17 +25,31 @@ pub struct TreeRow {
     pub kind: TreeKind,
 }
 
-/// Flatten files (relative paths with `/`) into visible tree rows: folders first, then files,
-/// each sorted case-insensitively; children of closed folders are omitted.
-pub fn build_tree(files: &[(String, PathBuf, bool)], expanded: &BTreeSet<String>) -> Vec<TreeRow> {
+/// Flatten files and folders (relative paths with `/`) into visible tree rows: folders first,
+/// then files, each sorted case-insensitively; children of closed folders are omitted.
+pub fn build_tree(
+    files: &[(String, PathBuf, bool)],
+    dirs: &[String],
+    expanded: &BTreeSet<String>,
+) -> Vec<TreeRow> {
     fn walk(
         prefix: &str,
         depth: usize,
         files: &[(String, PathBuf, bool)],
+        dirs: &[String],
         expanded: &BTreeSet<String>,
         out: &mut Vec<TreeRow>,
     ) {
         let mut folders: BTreeSet<(String, String)> = BTreeSet::new();
+        for dir in dirs {
+            if let Some(folder) = dir
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.split('/').next())
+                .filter(|f| !f.is_empty())
+            {
+                folders.insert((folder.to_lowercase(), folder.to_string()));
+            }
+        }
         let mut leaves: Vec<(String, PathBuf, bool)> = Vec::new();
         for (rel, path, conflict) in files {
             let Some(rest) = rel.strip_prefix(prefix) else {
@@ -59,7 +74,7 @@ pub fn build_tree(files: &[(String, PathBuf, bool)], expanded: &BTreeSet<String>
                 },
             });
             if open {
-                walk(&format!("{rel}/"), depth + 1, files, expanded, out);
+                walk(&format!("{rel}/"), depth + 1, files, dirs, expanded, out);
             }
         }
         leaves.sort_by_key(|(name, ..)| name.to_lowercase());
@@ -72,7 +87,7 @@ pub fn build_tree(files: &[(String, PathBuf, bool)], expanded: &BTreeSet<String>
         }
     }
     let mut out = Vec::new();
-    walk("", 0, files, expanded, &mut out);
+    walk("", 0, files, dirs, expanded, &mut out);
     out
 }
 
@@ -130,7 +145,7 @@ impl Workspace {
             .files()
             .map(|f| (f.rel.clone(), f.path.clone(), f.conflict))
             .collect();
-        let rows = build_tree(&files, &self.expanded);
+        let rows = build_tree(&files, &index.dirs(), &self.expanded);
         let tags = index.tags();
         let root_name = self
             .root
@@ -138,6 +153,7 @@ impl Workspace {
             .and_then(|r| r.file_name())
             .map_or("Notes".to_string(), |n| n.to_string_lossy().into_owned());
         let current = self.path.clone().filter(|_| self.editor_visible());
+        let root = self.root.clone();
 
         let file_rows: Vec<_> = rows
             .into_iter()
@@ -179,6 +195,13 @@ impl Workspace {
                     TreeKind::Folder { .. } => row.name.clone(),
                 };
                 let kind = row.kind.clone();
+                let target = match (&row.kind, &root) {
+                    (TreeKind::Folder { rel, .. }, Some(root)) => {
+                        TreeTarget::Folder(root.join(rel))
+                    }
+                    (TreeKind::File { path, .. }, _) => TreeTarget::File(path.clone()),
+                    _ => TreeTarget::Root,
+                };
                 components::list_item(("tree-row", i), selected, cx)
                     .pl(px(12. + 16. * row.depth as f32))
                     .text_color(color)
@@ -224,6 +247,13 @@ impl Workspace {
                             }
                         }),
                     )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, e: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.open_tree_menu(e.position, target.clone(), cx);
+                        }),
+                    )
             })
             .collect();
 
@@ -244,7 +274,7 @@ impl Workspace {
             })
             .collect();
 
-        let empty = index.is_empty();
+        let empty = index.is_empty() && index.dirs().is_empty();
         let has_tags = !tags.is_empty();
         div()
             .id("sidebar")
@@ -273,13 +303,20 @@ impl Workspace {
                     .pb_4()
                     .child(components::section_header("Views", cx))
                     .children(views)
-                    .child(components::section_header("Files", cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_end()
+                            .pr_1()
+                            .child(components::section_header("Files", cx).flex_1())
+                            .child(self.files_header_buttons(cx)),
+                    )
                     .when(empty, |d| {
                         d.child(div().px_3().text_color(colors.text_tertiary).child(
                             if self.scanning {
                                 "Loading…"
                             } else {
-                                "No .org files"
+                                "No notes yet"
                             },
                         ))
                     })
@@ -287,7 +324,14 @@ impl Workspace {
                     .when(has_tags, |d| {
                         d.child(components::section_header("Tags", cx))
                     })
-                    .children(tag_rows),
+                    .children(tag_rows)
+                    // Right-click on empty space: new note / folder at the top level.
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
+                            this.open_tree_menu(e.position, TreeTarget::Root, cx)
+                        }),
+                    ),
             )
     }
 }
@@ -310,16 +354,17 @@ mod tests {
             "Projects/sub/deep.org",
             "alpha.org",
         ]);
-        let rows = build_tree(&f, &BTreeSet::new());
+        let rows = build_tree(&f, &[], &BTreeSet::new());
         let names: Vec<_> = rows.iter().map(|r| (r.depth, r.name.as_str())).collect();
         assert_eq!(names, [(0, "Projects"), (0, "alpha.org"), (0, "zeta.org")]);
 
         let expanded: BTreeSet<String> = ["Projects".into()].into();
-        let rows = build_tree(&f, &expanded);
+        let rows = build_tree(&f, &["Projects/sub".into(), "Empty".into()], &expanded);
         let names: Vec<_> = rows.iter().map(|r| (r.depth, r.name.as_str())).collect();
         assert_eq!(
             names,
             [
+                (0, "Empty"),
                 (0, "Projects"),
                 (1, "sub"),
                 (1, "aster.org"),

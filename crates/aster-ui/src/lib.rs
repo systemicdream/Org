@@ -214,6 +214,9 @@ pub enum Elevation {
 pub struct ThemePrefs {
     pub appearance: Option<Appearance>,
     pub accent: Option<Rgba>,
+    /// Mica-like translucency: the base layer lets the (blurred) desktop show through. Only
+    /// set this where the window really is blurred, or the desktop shows through unblurred.
+    pub translucent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -249,9 +252,16 @@ impl Theme {
         Self {
             appearance,
             accent,
-            colors: match accent {
-                Some(a) => colors.with_accent(a, dark),
-                None => colors,
+            colors: {
+                let mut colors = match accent {
+                    Some(a) => colors.with_accent(a, dark),
+                    None => colors,
+                };
+                if prefs.translucent {
+                    // Enough tint to keep sidebar text readable over any wallpaper.
+                    colors.base.a = if dark { 0.80 } else { 0.72 };
+                }
+                colors
             },
             system_appearance,
             system_accent,
@@ -333,7 +343,9 @@ fn rebuild(
     );
     f(&mut appearance, &mut accent, &mut prefs);
     let next = Theme::new(appearance, accent, prefs);
-    let visible = next.appearance != current.appearance || next.accent != current.accent;
+    let visible = next.appearance != current.appearance
+        || next.accent != current.accent
+        || next.prefs.translucent != current.prefs.translucent;
     cx.set_global(next);
     visible
 }

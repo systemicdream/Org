@@ -181,6 +181,7 @@ impl Element for EditorElement {
 
         let cursor = editor.cursor_offset();
         let cursor_row = editor.row_for_offset(cursor);
+        let block_cursor = editor.vim_mode(cx) == Some(crate::vim::VimMode::Normal);
 
         let mut rows = Vec::with_capacity(editor.visible_rows.len());
         let mut wrap_updates = Vec::new();
@@ -406,15 +407,34 @@ impl Element for EditorElement {
             .and_then(|i| {
                 let r = &rows[i];
                 let col = r.display.to_display(cursor);
-                let p = r.wrapped.as_ref()?.position_for_index(col, r.line_height)?;
+                let wrapped = r.wrapped.as_ref()?;
+                let p = wrapped.position_for_index(col, r.line_height)?;
+                // Vim Normal mode: a block over the character under the cursor.
+                let width = if block_cursor {
+                    let next = r
+                        .display
+                        .to_display(aster_doc::text::next_grapheme(editor.doc.text(), cursor));
+                    wrapped
+                        .position_for_index(next, r.line_height)
+                        .filter(|q| q.y == p.y && q.x > p.x)
+                        .map_or(font_size * 0.6, |q| q.x - p.x)
+                } else {
+                    px(2.)
+                };
                 Some(Bounds::new(
                     point(text_left + r.indent + p.x, bounds.top() + r.top + p.y),
-                    size(px(2.), r.line_height),
+                    size(width, r.line_height),
                 ))
             });
         let cursor_quad = cursor_rect
-            .filter(|_| sel.is_empty() && editor.cursor_visible)
-            .map(|b| fill(b, colors.accent));
+            .filter(|_| sel.is_empty() && (editor.cursor_visible || block_cursor))
+            .map(|b| {
+                let mut color = colors.accent;
+                if block_cursor {
+                    color.a = 0.45;
+                }
+                fill(b, color)
+            });
 
         // Keep the cursor visible after keyboard navigation or edits.
         if full
