@@ -10,11 +10,11 @@ use gpui::{Hsla, Rgba};
 /// "Multicolor"), in which case Aster uses its default Fluent blue.
 pub fn system_accent() -> Option<Rgba> {
     // `ASTER_ACCENT=#rrggbb` overrides the system (handy for testing and personal taste).
-    if let Ok(v) = std::env::var("ASTER_ACCENT") {
-        let v = v.trim_start_matches('#');
-        if let Ok(n) = u32::from_str_radix(v, 16) {
-            return Some(hex(n));
-        }
+    if let Some(c) = std::env::var("ASTER_ACCENT")
+        .ok()
+        .and_then(|v| parse_hex(&v))
+    {
+        return Some(c);
     }
     #[cfg(target_os = "macos")]
     {
@@ -28,6 +28,35 @@ pub fn system_accent() -> Option<Rgba> {
     {
         None
     }
+}
+
+/// Accent colors offered in settings (alongside "System"), after the Windows 11 palette.
+pub const SWATCHES: [(&str, u32); 10] = [
+    ("Blue", 0x0078D4),
+    ("Navy", 0x0063B1),
+    ("Purple", 0x8764B8),
+    ("Pink", 0xC239B3),
+    ("Red", 0xE81123),
+    ("Orange", 0xCA5010),
+    ("Gold", 0xFFB900),
+    ("Green", 0x107C10),
+    ("Teal", 0x038387),
+    ("Graphite", 0x69797E),
+];
+
+/// Parse `#rrggbb` (or `rrggbb`).
+pub fn parse_hex(s: &str) -> Option<Rgba> {
+    let s = s.trim().trim_start_matches('#');
+    (s.len() == 6)
+        .then(|| u32::from_str_radix(s, 16).ok())
+        .flatten()
+        .map(hex)
+}
+
+/// Format as `#rrggbb`.
+pub fn to_hex(c: Rgba) -> String {
+    let ch = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", ch(c.r), ch(c.g), ch(c.b))
 }
 
 fn hex(v: u32) -> Rgba {
@@ -225,12 +254,17 @@ mod tests {
         assert!((k.r - 61. / 255.).abs() < 1e-6);
         assert!(gnome_named("teal").is_some());
         assert!(gnome_named("chartreuse").is_none());
+        let c = parse_hex("#038387").unwrap();
+        assert_eq!(to_hex(c), "#038387");
+        assert!(parse_hex("#12345").is_none());
     }
 
     #[test]
     fn derived_accents_meet_contrast() {
         // Including awkward accents: yellow, graphite, pale pink.
-        for base in [0xFFC600, 0x8C8C8C, 0xF74F9E, 0x007AFF, 0x62BA46, 0x2190A4] {
+        let swatches = SWATCHES.map(|(_, c)| c);
+        let system = [0xFFC600, 0x8C8C8C, 0xF74F9E, 0x007AFF, 0x62BA46, 0x2190A4];
+        for base in system.into_iter().chain(swatches) {
             for (dark, colors) in [(false, Colors::light()), (true, Colors::dark())] {
                 let surfaces = [colors.base, colors.layer, colors.flyout];
                 let a = derive(hex(base), dark, &surfaces);

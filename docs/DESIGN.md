@@ -58,7 +58,9 @@ on Linux the desktop's accent via the XDG appearance portal, KDE's `AccentColor`
 `accent-color`). Like Windows' accent shades, the color is adjusted per theme: darkened on light
 themes and lightened on dark themes until it reaches 4.5:1 contrast on every surface, and text on
 accent fills is black or white, whichever reads better. With no system preference (macOS
-"Multicolor"), the defaults below apply. `ASTER_ACCENT=#rrggbb` overrides it.
+"Multicolor"), the defaults below apply. Settings → Accent color can pick a fixed accent instead
+(a Windows 11-style palette of swatches); `ASTER_ACCENT=#rrggbb` stands in for the system accent
+when testing.
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
@@ -198,6 +200,13 @@ Subtitle title, buttons right-aligned (accent first).
 
 **Pills and chips** (TODO keywords, tags, dates) — `radius.control`, 4 px horizontal padding,
 inline with text.
+
+**Settings cards** — the Windows 11 Settings pattern. A `card` fill with a `stroke.surface`
+hairline, `radius.control`, at least 68 px high, 16 px horizontal padding; a 20 px icon, then the
+title (Body) over a description (Caption, `text.secondary`), with the control right-aligned. Cards
+in a group sit 3 px apart under a Body Strong group header. Changes apply and save immediately:
+there is no OK/Cancel. Controls never shift under the pointer as a value changes (reserve space
+for buttons that come and go, like "reset").
 
 **Scrollbars** — thin (2 px) at rest, widening on hover, `text.tertiary`; no track.
 

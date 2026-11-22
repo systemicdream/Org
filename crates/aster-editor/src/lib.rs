@@ -97,6 +97,13 @@ actions!(
         Unfold,
         FoldAll,
         UnfoldAll,
+        // Emacs keymap
+        /// Delete to the end of the line (or the line break at its end), copying it.
+        KillLine,
+        /// Org's TAB: fold/unfold the heading at the cursor, otherwise as Tab.
+        OrgCycle,
+        /// Org's Shift+TAB: fold or unfold every heading (in a table, the previous cell).
+        OrgGlobalCycle,
     ]
 );
 
@@ -967,6 +974,11 @@ impl OrgEditor {
         let mut h = DefaultHasher::new();
         self.row_meta.get(row).map(|m| m.hash).hash(&mut h);
         scale.to_bits().hash(&mut h);
+        // The text size (a setting) changes how lines wrap too.
+        self.metrics
+            .as_ref()
+            .map(|m| f32::from(m.font_size).to_bits())
+            .hash(&mut h);
         wrap_width.map(|w| f32::from(w).to_bits()).hash(&mut h);
         h.finish()
     }
@@ -1923,7 +1935,59 @@ impl OrgEditor {
         }
     }
 
+    fn kill_line(&mut self, _: &KillLine, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.selected_range.is_empty() {
+            return self.cut_selection(cx);
+        }
+        let text = self.doc.text();
+        let cursor = self.cursor_offset();
+        let mut end = text[cursor..].find('\n').map_or(text.len(), |i| cursor + i);
+        if end > cursor && text[..end].ends_with('\r') {
+            end -= 1;
+        }
+        if end == cursor {
+            end = text::next_grapheme(text, cursor);
+        }
+        if end == cursor {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text[cursor..end].to_string()));
+        self.edit(cursor..end, "", EditOrigin::Delete, cx);
+    }
+
+    fn org_cycle(&mut self, _: &OrgCycle, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::Full
+            && !self.cursor_in_table()
+            && self.cursor_on_heading_line()
+            && let Some(h) = self.heading_at_cursor()
+        {
+            self.toggle_fold_heading(&h, cx);
+            return;
+        }
+        self.tab(&Tab, window, cx);
+    }
+
+    fn org_global_cycle(
+        &mut self,
+        _: &OrgGlobalCycle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != EditorMode::Full || self.cursor_in_table() {
+            return self.outdent(&Outdent, window, cx);
+        }
+        if self.folds.is_empty() {
+            self.fold_all(&FoldAll, window, cx);
+        } else {
+            self.unfold_all(&UnfoldAll, window, cx);
+        }
+    }
+
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        self.cut_selection(cx);
+    }
+
+    fn cut_selection(&mut self, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.doc.text()[self.selected_range.clone()].to_string(),
@@ -2332,6 +2396,9 @@ impl Render for OrgEditor {
             .on_action(cx.listener(Self::shift_enter))
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::tab))
+            .on_action(cx.listener(Self::kill_line))
+            .on_action(cx.listener(Self::org_cycle))
+            .on_action(cx.listener(Self::org_global_cycle))
             .on_action(cx.listener(Self::outdent))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))

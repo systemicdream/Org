@@ -209,18 +209,37 @@ pub enum Elevation {
     Dialog,
 }
 
+/// The user's theme choices; `None` follows the system.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ThemePrefs {
+    pub appearance: Option<Appearance>,
+    pub accent: Option<Rgba>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Theme {
+    /// The appearance in effect (system, unless the user or `ASTER_APPEARANCE` chose one).
     pub appearance: Appearance,
-    /// The system accent the colors were derived from (`None`: Aster's default blue).
-    pub system_accent: Option<Rgba>,
+    /// The accent the colors were derived from (`None`: Aster's default blue).
+    pub accent: Option<Rgba>,
     pub colors: Colors,
+    system_appearance: Appearance,
+    system_accent: Option<Rgba>,
+    prefs: ThemePrefs,
 }
 
 impl Global for Theme {}
 
 impl Theme {
-    pub fn new(appearance: Appearance, system_accent: Option<Rgba>) -> Self {
+    pub fn new(
+        system_appearance: Appearance,
+        system_accent: Option<Rgba>,
+        prefs: ThemePrefs,
+    ) -> Self {
+        let appearance = forced_appearance()
+            .or(prefs.appearance)
+            .unwrap_or(system_appearance);
+        let accent = prefs.accent.or(system_accent);
         let dark = appearance == Appearance::Dark;
         let colors = if dark {
             Colors::dark()
@@ -229,12 +248,20 @@ impl Theme {
         };
         Self {
             appearance,
-            system_accent,
-            colors: match system_accent {
+            accent,
+            colors: match accent {
                 Some(a) => colors.with_accent(a, dark),
                 None => colors,
             },
+            system_appearance,
+            system_accent,
+            prefs,
         }
+    }
+
+    /// The system's accent color, if it has one (shown as the "System" swatch in settings).
+    pub fn system_accent(&self) -> Option<Rgba> {
+        self.system_accent
     }
 
     pub fn is_dark(&self) -> bool {
@@ -282,35 +309,51 @@ pub fn forced_appearance() -> Option<Appearance> {
     }
 }
 
-/// Install the theme for the system appearance (or the forced one).
-pub fn init(appearance: impl Into<Appearance>, cx: &mut App) {
-    let appearance = forced_appearance().unwrap_or(appearance.into());
-    cx.set_global(Theme::new(appearance, accent::system_accent()));
+/// Install the theme for the system appearance and accent, with the user's choices on top.
+pub fn init(system_appearance: impl Into<Appearance>, prefs: ThemePrefs, cx: &mut App) {
+    cx.set_global(Theme::new(
+        system_appearance.into(),
+        accent::system_accent(),
+        prefs,
+    ));
 }
 
-/// Follow a system appearance change, unless one is forced. Returns whether it changed.
-pub fn set_appearance(appearance: impl Into<Appearance>, cx: &mut App) -> bool {
-    let appearance = forced_appearance().unwrap_or(appearance.into());
-    let current = cx.try_global::<Theme>().cloned();
-    if current.as_ref().is_some_and(|t| t.appearance == appearance) {
-        return false;
-    }
-    let accent = current.and_then(|t| t.system_accent);
-    cx.set_global(Theme::new(appearance, accent));
-    true
-}
-
-/// Re-read the system accent (e.g. when the app regains focus). Returns whether it changed.
-pub fn refresh_accent(cx: &mut App) -> bool {
-    let accent = accent::system_accent();
+/// Rebuild the theme with changed inputs. Returns whether what's on screen changes.
+fn rebuild(
+    cx: &mut App,
+    f: impl FnOnce(&mut Appearance, &mut Option<Rgba>, &mut ThemePrefs),
+) -> bool {
     let Some(current) = cx.try_global::<Theme>().cloned() else {
         return false;
     };
-    if current.system_accent == accent {
-        return false;
-    }
-    cx.set_global(Theme::new(current.appearance, accent));
-    true
+    let (mut appearance, mut accent, mut prefs) = (
+        current.system_appearance,
+        current.system_accent,
+        current.prefs,
+    );
+    f(&mut appearance, &mut accent, &mut prefs);
+    let next = Theme::new(appearance, accent, prefs);
+    let visible = next.appearance != current.appearance || next.accent != current.accent;
+    cx.set_global(next);
+    visible
+}
+
+/// Follow a system appearance change. Returns whether what's on screen changes.
+pub fn set_appearance(system_appearance: impl Into<Appearance>, cx: &mut App) -> bool {
+    let system_appearance = system_appearance.into();
+    rebuild(cx, |a, _, _| *a = system_appearance)
+}
+
+/// Re-read the system accent (e.g. when the app regains focus). Returns whether what's on
+/// screen changes.
+pub fn refresh_accent(cx: &mut App) -> bool {
+    let system_accent = accent::system_accent();
+    rebuild(cx, |_, a, _| *a = system_accent)
+}
+
+/// Apply the user's theme choices. Returns whether what's on screen changes.
+pub fn set_prefs(prefs: ThemePrefs, cx: &mut App) -> bool {
+    rebuild(cx, |_, _, p| *p = prefs)
 }
 
 #[cfg(test)]

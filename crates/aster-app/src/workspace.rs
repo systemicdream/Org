@@ -15,9 +15,11 @@ use gpui::{
 };
 
 use crate::agenda_view::{AgendaEvent, AgendaView, Mode as AgendaMode};
-use crate::capture::{CaptureDialog, CaptureEvent, Template};
+use crate::capture::{CaptureDialog, CaptureEvent, CaptureTime, capture_op};
 use crate::picker::{PickTarget, Picker, PickerEvent, PickerItem};
 use crate::session::Session;
+use crate::settings::{CaptureTemplate, Settings};
+use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::watch::{self, FolderWatcher};
 use crate::*;
 use aster_doc::ops::OpResult;
@@ -30,6 +32,14 @@ pub const SAMPLE: &str = include_str!("../assets/welcome.org");
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1000);
 /// Collect file-change events for this long before acting on them.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// What fills the content area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Editor,
+    Agenda,
+    Settings,
+}
 
 pub struct Workspace {
     pub(crate) editor: Entity<OrgEditor>,
@@ -53,7 +63,8 @@ pub struct Workspace {
 
     // ---- views and dialogs ----
     agenda: Option<(Entity<AgendaView>, Subscription)>,
-    show_agenda: bool,
+    settings: Option<(Entity<SettingsView>, Subscription)>,
+    view: MainView,
     capture: Option<(Entity<CaptureDialog>, Subscription)>,
     /// The heading waiting for a refile target: (file, heading start).
     refile_source: Option<(PathBuf, usize)>,
@@ -87,7 +98,8 @@ impl Workspace {
             sidebar_open: true,
             _watcher: None,
             agenda: None,
-            show_agenda: false,
+            settings: None,
+            view: MainView::Editor,
             capture: None,
             refile_source: None,
             toast: None,
@@ -253,7 +265,7 @@ impl Workspace {
     pub(crate) fn current_view(&self, cx: &gpui::App) -> Option<AgendaMode> {
         self.agenda
             .as_ref()
-            .filter(|_| self.show_agenda)
+            .filter(|_| self.view == MainView::Agenda)
             .map(|(v, _)| v.read(cx).mode)
     }
 
@@ -277,27 +289,32 @@ impl Workspace {
                         match event {
                             AgendaEvent::Open(path, offset) => {
                                 let (path, offset) = (path.clone(), *offset);
-                                this.hide_agenda(window, cx);
+                                this.show_editor(window, cx);
                                 this.open_at(path, offset..offset, window, cx);
                             }
                             AgendaEvent::ToggleDone(path, offset) => {
                                 let (path, offset) = (path.clone(), *offset);
                                 this.toggle_done_at(&path, offset, cx);
                             }
-                            AgendaEvent::Close => this.hide_agenda(window, cx),
+                            AgendaEvent::Close => this.show_editor(window, cx),
                         }
                     });
                 self.agenda = Some((view.clone(), sub));
                 view
             }
         };
-        self.show_agenda = true;
+        self.view = MainView::Agenda;
         view.update(cx, |v, cx| v.set_mode(mode, window, cx));
         cx.notify();
     }
 
-    fn hide_agenda(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_agenda = false;
+    /// Whether the open file's editor is on screen (not the agenda or settings).
+    pub(crate) fn editor_visible(&self) -> bool {
+        self.view == MainView::Editor
+    }
+
+    fn show_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.view = MainView::Editor;
         window.focus(&self.editor.focus_handle(cx));
         cx.notify();
     }
@@ -308,11 +325,43 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.show_agenda {
-            self.hide_agenda(window, cx);
+        if self.view == MainView::Agenda {
+            self.show_editor(window, cx);
         } else {
             self.show_agenda_mode(AgendaMode::Day, window, cx);
         }
+    }
+
+    pub(crate) fn show_settings(
+        &mut self,
+        _: &ShowSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.view == MainView::Settings {
+            self.show_editor(window, cx);
+            return;
+        }
+        let view = match &self.settings {
+            Some((view, _)) => view.clone(),
+            None => {
+                let view = cx.new(|cx| SettingsView::new(window, cx));
+                let sub = cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, event: &SettingsEvent, window, cx| match event {
+                        SettingsEvent::Close => this.show_editor(window, cx),
+                        SettingsEvent::Error(msg) => this.toast(msg.clone(), true, cx),
+                    },
+                );
+                self.settings = Some((view.clone(), sub));
+                view
+            }
+        };
+        self.close_find_bar(window, cx);
+        self.view = MainView::Settings;
+        window.focus(&view.focus_handle(cx));
+        cx.notify();
     }
 
     pub(crate) fn show_todo_list(
@@ -376,7 +425,7 @@ impl Workspace {
             window,
             |this, _, event: &CaptureEvent, window, cx| match event {
                 CaptureEvent::Capture(template, text) => {
-                    let (template, text) = (*template, text.clone());
+                    let (template, text) = (template.clone(), text.clone());
                     this.capture = None;
                     window.focus(&this.editor.focus_handle(cx));
                     this.save_capture(template, &text, cx);
@@ -392,54 +441,29 @@ impl Workspace {
         cx.notify();
     }
 
-    fn save_capture(&mut self, template: Template, text: &str, cx: &mut Context<Self>) {
+    fn save_capture(&mut self, template: CaptureTemplate, text: &str, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let stamp = dates::inactive_now();
-        let (file, result) = match template {
-            Template::Task | Template::Note => {
-                let path = root.join("inbox.org");
-                let keyword = if template == Template::Task {
-                    "TODO "
-                } else {
-                    ""
-                };
-                let chunk = format!("* {keyword}{text}\n{stamp}\n");
-                let r = self.edit_file(&path, |doc| meta::insert_subtree(doc, None, &chunk), cx);
-                ("inbox.org", r)
-            }
-            Template::Journal => {
-                let path = root.join("journal.org");
-                let today = dates::today();
-                let day_title = dates::format_date(today);
-                let time = chrono::Local::now().format("%H:%M").to_string();
-                let r = self.edit_file(
-                    &path,
-                    |doc| {
-                        let day = doc
-                            .headings()
-                            .iter()
-                            .find(|h| h.level == 1 && h.title == day_title)
-                            .map(|h| h.range.start);
-                        match day {
-                            Some(d) => {
-                                meta::insert_subtree(doc, Some(d), &format!("** {time} {text}\n"))
-                            }
-                            None => meta::insert_subtree(
-                                doc,
-                                None,
-                                &format!("* {day_title}\n** {time} {text}\n"),
-                            ),
-                        }
-                    },
-                    cx,
-                );
-                ("journal.org", r)
-            }
+        let Some(rel) = template.target() else {
+            self.toast(
+                format!(
+                    "The “{}” template has no usable file. Fix it in Settings.",
+                    template.name
+                ),
+                true,
+                cx,
+            );
+            return;
         };
+        let at = CaptureTime::now();
+        let result = self.edit_file(
+            &root.join(&rel),
+            |doc| capture_op(doc, &template, text, &at),
+            cx,
+        );
         match result {
-            Ok(_) => self.toast(format!("Captured to {file}"), false, cx),
+            Ok(_) => self.toast(format!("Captured to {}", rel.display()), false, cx),
             Err(err) => self.toast(format!("Capture failed: {err:#}"), true, cx),
         }
     }
@@ -782,7 +806,7 @@ impl Workspace {
         // One spelling per file (`a/../b.org` → `b.org`), so it matches the index and tree.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if self.path.as_ref() == Some(&path) {
-            self.show_agenda = false;
+            self.view = MainView::Editor;
             window.focus(&self.editor.focus_handle(cx));
             cx.notify();
             return;
@@ -811,7 +835,7 @@ impl Workspace {
         self.sync_known_tags(cx);
         self.dirty = false;
         self.reveal_in_tree(&path);
-        self.show_agenda = false;
+        self.view = MainView::Editor;
         window.set_window_title(&self.title());
         window.focus(&self.editor.focus_handle(cx));
         self.save_session();
@@ -1130,6 +1154,7 @@ impl Workspace {
             ("Agenda", Box::new(ShowAgenda)),
             ("To-do list", Box::new(ShowTodoList)),
             ("Capture…", Box::new(Capture)),
+            ("Settings…", Box::new(ShowSettings)),
             ("Toggle sidebar", Box::new(ToggleSidebar)),
             ("Save", Box::new(Save)),
             ("Save as…", Box::new(SaveAs)),
@@ -1383,7 +1408,7 @@ pub fn read_org(path: &Path) -> anyhow::Result<String> {
 }
 
 /// Write via a temp file + rename so sync tools never observe a half-written file.
-fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(
         ".{}.aster-tmp",
@@ -1481,16 +1506,26 @@ impl Render for Workspace {
                 cx,
             ))
             .child(bar_button(
+                "bar-settings",
+                Icon::Settings,
+                "Settings",
+                || Box::new(ShowSettings),
+                cx,
+            ))
+            .child(bar_button(
                 "bar-commands",
                 Icon::More,
                 "All commands",
                 || Box::new(ShowCommandPalette),
                 cx,
             ));
-        let main = match self.agenda.as_ref().filter(|_| self.show_agenda) {
-            Some((agenda, _)) => agenda.clone().into_any_element(),
-            None => self.editor.clone().into_any_element(),
+        let main = match (self.view, &self.agenda, &self.settings) {
+            (MainView::Agenda, Some((agenda, _)), _) => agenda.clone().into_any_element(),
+            (MainView::Settings, _, Some((settings, _))) => settings.clone().into_any_element(),
+            _ => self.editor.clone().into_any_element(),
         };
+        let text_size = cx.global::<Settings>().font_size;
+        let line_height = cx.global::<Settings>().line_height();
 
         div()
             .size_full()
@@ -1498,8 +1533,8 @@ impl Render for Workspace {
             .flex_col()
             .bg(colors.base)
             .text_color(colors.text_primary)
-            .text_size(ramp::EDITOR.size)
-            .line_height(ramp::EDITOR.line_height)
+            .text_size(px(text_size))
+            .line_height(px(line_height))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::open))
@@ -1516,6 +1551,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_agenda))
             .on_action(cx.listener(Self::show_todo_list))
             .on_action(cx.listener(Self::capture))
+            .on_action(cx.listener(Self::show_settings))
             .on_action(cx.listener(Self::refile))
             .on_action(cx.listener(Self::archive))
             .child(title_bar)
@@ -1541,7 +1577,11 @@ impl Render for Workspace {
                             .when(has_sidebar, |d| {
                                 d.border_l_1().rounded_tl(aster_ui::RADIUS_OVERLAY)
                             })
-                            .children(self.find_bar.clone().filter(|_| !self.show_agenda))
+                            .children(
+                                self.find_bar
+                                    .clone()
+                                    .filter(|_| self.view == MainView::Editor),
+                            )
                             .child(div().flex_1().min_h_0().child(main)),
                     ),
             )

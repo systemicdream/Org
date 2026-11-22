@@ -354,9 +354,11 @@ helper), configurable capture templates and targets, clocking/effort sums in the
 - [x] Layout: base layer + rounded content layer; transparent title bar on macOS
 - [x] Fluent UI System Icons (bundled SVG, MIT) with a command bar on every platform
 - [x] System accent color with per-theme contrast-safe shades
-- [ ] Settings (appearance, font size, capture targets/templates, keymap) with a settings page
+- [x] Settings (appearance, accent, text size, capture templates and targets, keymap) with a
+      settings page; saved as JSON in the platform config dir (`ASTER_SETTINGS_FILE` overrides)
 - [ ] First run: choose/create a notes folder, welcome notebook, starter templates, empty states
-- [ ] Optional Emacs keymap
+- [x] Optional Emacs keymap (movement and kill/yank, Org TAB/S-TAB cycling, M-RET/M-arrows,
+      `C-c C-t`/`C-c C-w`/`C-c C-x C-a`, `C-x` file commands, `C-c a`/`C-c c`, `M-x`)
 - [ ] Create / rename / delete files from the sidebar
 - [ ] Hands-on test on macOS and Linux
 

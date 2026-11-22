@@ -57,6 +57,11 @@ pub enum Icon {
     More,
     Open,
     Sync,
+    Theme,
+    Color,
+    TextSize,
+    Keyboard,
+    Reset,
 }
 
 impl Icon {
@@ -110,6 +115,11 @@ impl Icon {
             Icon::More => "icons/more_horizontal.svg",
             Icon::Open => "icons/open.svg",
             Icon::Sync => "icons/arrow_sync.svg",
+            Icon::Theme => "icons/dark_theme.svg",
+            Icon::Color => "icons/color.svg",
+            Icon::TextSize => "icons/text_font_size.svg",
+            Icon::Keyboard => "icons/keyboard.svg",
+            Icon::Reset => "icons/arrow_reset.svg",
         }
     }
 }
@@ -282,6 +292,26 @@ const ICONS: &[(&str, &[u8])] = &[
     (
         "icons/arrow_sync.svg",
         include_bytes!("../assets/icons/arrow_sync.svg"),
+    ),
+    (
+        "icons/dark_theme.svg",
+        include_bytes!("../assets/icons/dark_theme.svg"),
+    ),
+    (
+        "icons/color.svg",
+        include_bytes!("../assets/icons/color.svg"),
+    ),
+    (
+        "icons/text_font_size.svg",
+        include_bytes!("../assets/icons/text_font_size.svg"),
+    ),
+    (
+        "icons/keyboard.svg",
+        include_bytes!("../assets/icons/keyboard.svg"),
+    ),
+    (
+        "icons/arrow_reset.svg",
+        include_bytes!("../assets/icons/arrow_reset.svg"),
     ),
 ];
 

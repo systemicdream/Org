@@ -137,7 +137,7 @@ impl Workspace {
             .as_ref()
             .and_then(|r| r.file_name())
             .map_or("Notes".to_string(), |n| n.to_string_lossy().into_owned());
-        let current = self.path.clone().filter(|_| current_view.is_none());
+        let current = self.path.clone().filter(|_| self.editor_visible());
 
         let file_rows: Vec<_> = rows
             .into_iter()

@@ -6,8 +6,11 @@
 
 mod agenda_view;
 mod capture;
+mod keymap;
 mod picker;
 mod session;
+mod settings;
+mod settings_view;
 mod sidebar;
 mod watch;
 mod workspace;
@@ -15,11 +18,12 @@ mod workspace;
 use std::path::PathBuf;
 
 use gpui::{
-    App, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem, SystemMenuType,
-    TitlebarOptions, WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
+    App, Application, Bounds, Focusable, Menu, MenuItem, SystemMenuType, TitlebarOptions,
+    WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
 };
 
 use session::Session;
+use settings::Settings;
 use workspace::{SAMPLE, Workspace, read_org};
 
 actions!(
@@ -40,16 +44,19 @@ actions!(
         ShowCommandPalette,
         ShowAgenda,
         ShowTodoList,
+        ShowSettings,
         Capture
     ]
 );
 
-fn menus() -> Vec<Menu> {
+pub(crate) fn menus() -> Vec<Menu> {
     use aster_editor as e;
     vec![
         Menu {
             name: "Aster".into(),
             items: vec![
+                MenuItem::action("Settings…", ShowSettings),
+                MenuItem::separator(),
                 MenuItem::os_submenu("Services", SystemMenuType::Services),
                 MenuItem::separator(),
                 MenuItem::action("Quit Aster", Quit),
@@ -160,34 +167,10 @@ fn main() -> anyhow::Result<()> {
     Application::new()
         .with_assets(aster_ui::icons::Assets)
         .run(move |cx: &mut App| {
-            aster_ui::init(cx.window_appearance(), cx);
-            aster_editor::bind_keys(cx);
-            agenda_view::bind_keys(cx);
-            let mut keys = vec![
-                KeyBinding::new("secondary-o", Open, None),
-                KeyBinding::new("secondary-shift-o", OpenFolder, None),
-                KeyBinding::new("secondary-p", QuickOpen, None),
-                KeyBinding::new("secondary-shift-f", SearchAll, None),
-                KeyBinding::new("secondary-b", ToggleSidebar, None),
-                KeyBinding::new("secondary-shift-a", ShowAgenda, None),
-                KeyBinding::new("secondary-shift-t", ShowTodoList, None),
-                KeyBinding::new("secondary-n", Capture, None),
-                KeyBinding::new("secondary-shift-r", aster_editor::Refile, None),
-                KeyBinding::new("secondary-s", Save, None),
-                KeyBinding::new("secondary-shift-s", SaveAs, None),
-                KeyBinding::new("secondary-q", Quit, None),
-                KeyBinding::new("secondary-f", Find, None),
-                KeyBinding::new("secondary-g", FindNext, None),
-                KeyBinding::new("secondary-shift-p", ShowCommandPalette, None),
-                KeyBinding::new("secondary-shift-g", FindPrevious, None),
-            ];
-            keys.push(if cfg!(target_os = "macos") {
-                KeyBinding::new("cmd-alt-f", FindReplace, None)
-            } else {
-                KeyBinding::new("ctrl-h", FindReplace, None)
-            });
-            cx.bind_keys(keys);
-            cx.set_menus(menus());
+            let settings = Settings::load();
+            aster_ui::init(cx.window_appearance(), settings.theme_prefs(), cx);
+            keymap::apply(settings.keymap, cx);
+            cx.set_global(settings);
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
             let window = cx
