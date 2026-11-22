@@ -16,7 +16,7 @@ mod popup;
 mod preview;
 mod spans;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -362,6 +362,10 @@ pub struct OrgEditor {
     /// Monospace font family, resolved from installed fonts on first paint.
     mono_family: Option<SharedString>,
     folds: Folds,
+    /// Drawers (`:PROPERTIES:` …) shown expanded, by start offset. Drawers are collapsed into a
+    /// chip by default.
+    open_drawers: BTreeSet<usize>,
+    drawer_cache: Vec<(Range<usize>, Range<usize>)>,
     /// Document version the folds were last remapped for.
     synced_version: u64,
     hidden: Vec<Range<usize>>,
@@ -436,6 +440,8 @@ impl OrgEditor {
             row_images: HashMap::new(),
             image_sizes: HashMap::new(),
             folds: Folds::default(),
+            open_drawers: BTreeSet::new(),
+            drawer_cache: Vec::new(),
             synced_version: 0,
             hidden: Vec::new(),
             visible_rows: Vec::new(),
@@ -545,6 +551,7 @@ impl OrgEditor {
         let mut revealed = false;
         for pos in [range.start, range.end] {
             revealed |= self.folds.reveal(pos, self.doc.headings(), self.doc.text());
+            revealed |= self.reveal_drawer(pos);
         }
         if revealed {
             self.recompute_lines();
@@ -571,6 +578,17 @@ impl OrgEditor {
         if self.synced_version != self.doc.version() {
             if let Some(tx) = self.doc.last_change() {
                 self.folds.remap(tx, self.doc.headings(), self.doc.text());
+                let starts: BTreeSet<usize> = self
+                    .compute_drawers()
+                    .into_iter()
+                    .map(|(r, _)| r.start)
+                    .collect();
+                self.open_drawers = self
+                    .open_drawers
+                    .iter()
+                    .map(|&s| tx.map(s, true))
+                    .filter(|s| starts.contains(s))
+                    .collect();
             }
             self.synced_version = self.doc.version();
         }
@@ -647,8 +665,32 @@ impl OrgEditor {
         } else {
             HashMap::new()
         };
+
+        self.drawer_cache = if self.mode == EditorMode::Full {
+            self.compute_drawers()
+        } else {
+            Vec::new()
+        };
         let text = self.doc.text();
-        self.hidden = self.folds.hidden_ranges(self.doc.headings(), text);
+        let mut hidden = self.folds.hidden_ranges(self.doc.headings(), text);
+        if self.mode == EditorMode::Full {
+            hidden.extend(
+                self.drawers()
+                    .iter()
+                    .filter(|(r, _)| !self.open_drawers.contains(&r.start))
+                    .map(|(_, body)| body.clone())
+                    .filter(|b| !b.is_empty()),
+            );
+        }
+        hidden.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for r in hidden {
+            match merged.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        self.hidden = merged;
         let hidden = &self.hidden;
         self.visible_rows = (0..self.line_starts.len())
             .filter(|&row| {
@@ -839,8 +881,83 @@ impl OrgEditor {
         if self.mode != EditorMode::Full {
             return RowDisplay::plain(self.doc.text(), range);
         }
+        if let Some(label) = self.drawer_chip(range.start) {
+            return RowDisplay::replaced_line(range, &label);
+        }
         let decos = self.inline_decorations(&range);
         RowDisplay::build(self.doc.text(), range, decos, |d| self.revealed(d))
+    }
+
+    /// Drawers as (whole range, body range), cached per change.
+    fn drawers(&self) -> &[(Range<usize>, Range<usize>)] {
+        &self.drawer_cache
+    }
+
+    /// Drawers as (whole range, body range); the body is everything after the first line.
+    fn compute_drawers(&self) -> Vec<(Range<usize>, Range<usize>)> {
+        let text = self.doc.text();
+        self.doc
+            .decorations()
+            .iter()
+            .filter(|d| d.kind == DecoKind::Drawer)
+            .map(|d| {
+                let first_end = text[d.range.start..]
+                    .find('\n')
+                    .map_or(d.range.end, |i| d.range.start + i + 1)
+                    .min(d.range.end);
+                (d.range.clone(), first_end..d.range.end)
+            })
+            .collect()
+    }
+
+    /// The chip label shown in place of a drawer's first line starting at `line_start`.
+    fn drawer_chip(&self, line_start: usize) -> Option<String> {
+        let (range, body) = self
+            .drawers()
+            .iter()
+            .find(|(r, _)| r.start == line_start)
+            .cloned()?;
+        let text = self.doc.text();
+        let name = text[range.start..body.start].trim().trim_matches(':');
+        let mut c = name.chars();
+        let name: String = c.next().map_or(String::new(), |f| {
+            f.to_uppercase()
+                .chain(c.flat_map(char::to_lowercase))
+                .collect()
+        });
+        // Entries, not counting the :END: line.
+        let entries = text[body]
+            .lines()
+            .filter(|l| !l.trim().eq_ignore_ascii_case(":end:") && !l.trim().is_empty())
+            .count();
+        let open = self.open_drawers.contains(&range.start);
+        Some(format!(
+            "{} {name} · {entries}",
+            if open { "▾" } else { "▸" }
+        ))
+    }
+
+    /// Expand the drawer whose hidden body contains `offset`. Returns whether anything changed.
+    fn reveal_drawer(&mut self, offset: usize) -> bool {
+        let hit = self
+            .drawers()
+            .iter()
+            .find(|(r, body)| body.contains(&offset) && !self.open_drawers.contains(&r.start))
+            .cloned();
+        match hit {
+            Some((r, _)) => {
+                self.open_drawers.insert(r.start);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn toggle_drawer(&mut self, start: usize, cx: &mut Context<Self>) {
+        if !self.open_drawers.remove(&start) {
+            self.open_drawers.insert(start);
+        }
+        self.folds_changed(cx);
     }
 
     /// Styled ranges in display coordinates: line style, Org syntax, inline markup, search
@@ -1242,10 +1359,10 @@ impl OrgEditor {
             cx.notify();
             return;
         };
-        if self
+        let folded = self
             .folds
-            .reveal(m.start, self.doc.headings(), self.doc.text())
-        {
+            .reveal(m.start, self.doc.headings(), self.doc.text());
+        if folded | self.reveal_drawer(m.start) {
             self.recompute_lines();
         }
         self.doc.seal_undo_group();
@@ -1719,6 +1836,13 @@ impl OrgEditor {
             {
                 self.toggle_fold_heading(&h, cx);
             }
+            return true;
+        }
+
+        // A drawer chip: expand / collapse.
+        if self.drawer_chip(self.line_starts[row]).is_some() {
+            let start = self.line_starts[row];
+            self.toggle_drawer(start, cx);
             return true;
         }
 
