@@ -1,0 +1,388 @@
+//! Layout and painting for [`OrgEditor`].
+//!
+//! Every visible (unfolded) row gets a vertical position. Rows near the viewport are shaped
+//! with soft wrapping; rows far away use a cached visual-line count (or one line) so the
+//! document height stays stable without shaping everything.
+
+use aster_doc::folds::foldable_range;
+use gpui::{
+    App, Bounds, ElementId, ElementInputHandler, Entity, GlobalElementId, LayoutId, PaintQuad,
+    Pixels, Point, ShapedLine, Style, TextAlign, TextRun, Window, fill, point, prelude::*, px,
+    relative, rgb, rgba, size,
+};
+
+use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout, muted};
+
+/// Width of the fold-arrow gutter left of the text.
+fn gutter() -> Pixels {
+    px(22.)
+}
+
+/// Extra rows shaped above and below the viewport, so scrolling a little needs no reshaping.
+const OVERSCAN_LINES: f32 = 8.;
+
+pub struct EditorElement {
+    editor: Entity<OrgEditor>,
+}
+
+impl EditorElement {
+    pub fn new(editor: Entity<OrgEditor>) -> Self {
+        Self { editor }
+    }
+}
+
+pub struct PrepaintState {
+    rows: Vec<RowLayout>,
+    text_left: Pixels,
+    /// Visible vertical range, relative to the element top.
+    paint_range: (Pixels, Pixels),
+    selections: Vec<PaintQuad>,
+    glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
+    cursor: Option<PaintQuad>,
+    wrap_updates: Vec<(u64, usize)>,
+}
+
+impl IntoElement for EditorElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for EditorElement {
+    type RequestLayoutState = ();
+    type PrepaintState = PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let editor = self.editor.read(cx);
+        let line_height = window.line_height();
+        let height = match editor.mode {
+            EditorMode::SingleLine => line_height,
+            EditorMode::Full => {
+                let wrap_width = editor.metrics.as_ref().and_then(|m| m.wrap_width);
+                editor
+                    .visible_rows
+                    .iter()
+                    .map(|&row| {
+                        let scale = editor.row_scale(row);
+                        let key = editor.wrap_key(row, scale, wrap_width);
+                        let lines = editor.wrap_cache.get(&key).copied().unwrap_or(1);
+                        line_height * scale * lines as f32
+                    })
+                    .fold(px(0.), |a, b| a + b)
+            }
+        };
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = height.into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> PrepaintState {
+        let style = window.text_style();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let line_height = window.line_height();
+        let full = self.editor.read(cx).mode == EditorMode::Full;
+        let gutter = if full { gutter() } else { px(0.) };
+        let text_left = bounds.left() + gutter;
+        let metrics = Metrics {
+            font: style.font(),
+            font_size,
+            color: style.color,
+            wrap_width: full.then(|| (bounds.size.width - gutter).max(px(80.))),
+        };
+        self.editor
+            .update(cx, |e, _| e.metrics = Some(metrics.clone()));
+        let editor = self.editor.read(cx);
+
+        // Which part of the element is on screen.
+        let viewport = if full {
+            let v = editor.scroll_handle.bounds();
+            if v.size.height > px(0.) { v } else { bounds }
+        } else {
+            bounds
+        };
+        let paint_top = viewport.top() - bounds.top();
+        let paint_bottom = viewport.bottom() - bounds.top();
+        let overscan = line_height * OVERSCAN_LINES;
+
+        let cursor = editor.cursor_offset();
+        let cursor_row = editor.row_for_offset(cursor);
+
+        let mut rows = Vec::with_capacity(editor.visible_rows.len());
+        let mut wrap_updates = Vec::new();
+        let mut y = px(0.);
+        for &row in &editor.visible_rows {
+            let scale = editor.row_scale(row);
+            let lh = line_height * scale;
+            let key = editor.wrap_key(row, scale, metrics.wrap_width);
+            let estimate = editor.wrap_cache.get(&key).copied().unwrap_or(1);
+            let near = (y + lh * estimate as f32 >= paint_top - overscan
+                && y <= paint_bottom + overscan)
+                || row == cursor_row;
+            let (wrapped, visual_lines) = if near {
+                let w = editor.shape_row(row, &metrics, window);
+                let n = w.wrap_boundaries().len() + 1;
+                if n != estimate || !editor.wrap_cache.contains_key(&key) {
+                    wrap_updates.push((key, n));
+                }
+                (Some(w), n)
+            } else {
+                (None, estimate)
+            };
+            rows.push(RowLayout {
+                row,
+                top: y,
+                line_height: lh,
+                wrapped,
+                visual_lines,
+            });
+            y += lh * visual_lines as f32;
+        }
+        let total_height = y;
+
+        let wrap_width = metrics.wrap_width;
+        let run = |color| TextRun {
+            len: 0,
+            font: metrics.font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shape_glyph = |window: &mut Window, s: &'static str, color, font_size| {
+            let mut r = run(color);
+            r.len = s.len();
+            window
+                .text_system()
+                .shape_line(s.into(), font_size, &[r], None)
+        };
+
+        let selection_color = rgba(0x3b82f640);
+        let sel = editor.selected_range.clone();
+        let mut selections = Vec::new();
+        let mut glyphs = Vec::new();
+        let text = editor.doc.text();
+
+        for r in rows.iter().filter(|r| r.wrapped.is_some()) {
+            if r.top + r.height() < paint_top || r.top > paint_bottom {
+                continue;
+            }
+            let w = r.wrapped.as_ref().expect("filtered");
+            let lh = r.line_height;
+            let origin = point(text_left, bounds.top() + r.top);
+            let range = editor.line_range(r.row);
+            let line_width = wrap_width.unwrap_or(w.width());
+
+            // Selection rectangles, one per visual line touched.
+            let row_end = editor
+                .line_starts
+                .get(r.row + 1)
+                .copied()
+                .unwrap_or(text.len());
+            if !sel.is_empty() && sel.start < row_end.max(range.end) && sel.end > range.start {
+                let s = sel.start.max(range.start) - range.start;
+                let e = sel.end.min(range.end).max(range.start) - range.start;
+                let newline_selected = sel.end > range.end && range.end < text.len();
+                let p0 = w.position_for_index(s, lh).unwrap_or_default();
+                let p1 = w.position_for_index(e, lh).unwrap_or(p0);
+                let extra = if newline_selected { px(6.) } else { px(0.) };
+                let mut push = |x0: Pixels, x1: Pixels, vy: Pixels| {
+                    selections.push(fill(
+                        Bounds::from_corners(
+                            origin + point(x0, vy),
+                            origin + point(x1.max(x0 + px(1.)), vy + lh),
+                        ),
+                        selection_color,
+                    ));
+                };
+                if p0.y == p1.y {
+                    push(p0.x, p1.x + extra, p0.y);
+                } else {
+                    push(p0.x, line_width, p0.y);
+                    let mut vy = p0.y + lh;
+                    while vy < p1.y {
+                        push(px(0.), line_width, vy);
+                        vy += lh;
+                    }
+                    push(px(0.), p1.x + extra, p1.y);
+                }
+            }
+
+            // Fold arrows and the "…" after folded headings.
+            if full && let Some(_level) = editor.heading_level(r.row) {
+                let start = editor.line_starts[r.row];
+                if let Some(h) = editor
+                    .doc
+                    .headings()
+                    .iter()
+                    .find(|h| h.range.start == start)
+                    && !foldable_range(h, text).is_empty()
+                {
+                    let folded = editor.folds.is_folded(start);
+                    let (glyph, color) = if folded {
+                        ("▸", rgb(0x6b7280).into())
+                    } else {
+                        ("▾", rgb(0xd1d5db).into())
+                    };
+                    let shaped = shape_glyph(window, glyph, color, font_size);
+                    let gy = bounds.top() + r.top + (lh - line_height) / 2.;
+                    glyphs.push((shaped, point(bounds.left() + px(4.), gy), line_height));
+                    if folded {
+                        let end = w.position_for_index(range.len(), lh).unwrap_or_default();
+                        let shaped =
+                            shape_glyph(window, " …", muted(), font_size * (lh / line_height));
+                        glyphs.push((shaped, origin + point(end.x + px(2.), end.y), lh));
+                    }
+                }
+            }
+        }
+
+        // Placeholder for empty single-line inputs.
+        if !full
+            && text.is_empty()
+            && let Some(placeholder) = editor.placeholder.clone()
+        {
+            let mut r = run(muted());
+            r.len = placeholder.len();
+            let shaped = window
+                .text_system()
+                .shape_line(placeholder, font_size, &[r], None);
+            glyphs.push((shaped, point(text_left, bounds.top()), line_height));
+        }
+
+        // Cursor.
+        let cursor_rect = rows
+            .binary_search_by_key(&cursor_row, |r| r.row)
+            .ok()
+            .and_then(|i| {
+                let r = &rows[i];
+                let col =
+                    cursor.min(editor.line_range(cursor_row).end) - editor.line_starts[cursor_row];
+                let p = r.wrapped.as_ref()?.position_for_index(col, r.line_height)?;
+                Some(Bounds::new(
+                    point(text_left + p.x, bounds.top() + r.top + p.y),
+                    size(px(2.), r.line_height),
+                ))
+            });
+        let cursor_quad = cursor_rect
+            .filter(|_| sel.is_empty() && editor.cursor_visible)
+            .map(|b| fill(b, rgb(0x3b82f6)));
+
+        // Keep the cursor visible after keyboard navigation or edits.
+        if full
+            && editor.autoscroll
+            && let Some(c) = cursor_rect
+        {
+            let mut offset = editor.scroll_handle.offset();
+            let margin = line_height * 2.;
+            if c.top() - margin < viewport.top() {
+                offset.y += viewport.top() - (c.top() - margin);
+            } else if c.bottom() + margin > viewport.bottom() {
+                offset.y -= c.bottom() + margin - viewport.bottom();
+            }
+            offset.y = offset.y.min(px(0.));
+            if offset != editor.scroll_handle.offset() {
+                editor.scroll_handle.set_offset(offset);
+                window.refresh();
+            }
+        }
+
+        // Newly measured rows changed the document height: lay out again next frame.
+        if full && (total_height - bounds.size.height).abs() > px(0.5) {
+            window.refresh();
+        }
+
+        PrepaintState {
+            rows,
+            text_left,
+            paint_range: (paint_top, paint_bottom),
+            selections,
+            glyphs,
+            cursor: cursor_quad,
+            wrap_updates,
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        prepaint: &mut PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let focus_handle = self.editor.read(cx).focus_handle.clone();
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.editor.clone()),
+            cx,
+        );
+        for quad in prepaint.selections.drain(..) {
+            window.paint_quad(quad);
+        }
+        let (top, bottom) = prepaint.paint_range;
+        for r in &prepaint.rows {
+            let Some(w) = r.wrapped.as_ref() else {
+                continue;
+            };
+            if r.top + r.height() < top || r.top > bottom {
+                continue;
+            }
+            let origin = point(prepaint.text_left, bounds.top() + r.top);
+            w.paint_background(origin, r.line_height, TextAlign::Left, None, window, cx)
+                .ok();
+            w.paint(origin, r.line_height, TextAlign::Left, None, window, cx)
+                .ok();
+        }
+        for (shaped, origin, lh) in &prepaint.glyphs {
+            shaped.paint(*origin, *lh, window, cx).ok();
+        }
+        if focus_handle.is_focused(window)
+            && let Some(cursor) = prepaint.cursor.take()
+        {
+            window.paint_quad(cursor);
+        }
+
+        let rows = std::mem::take(&mut prepaint.rows);
+        let updates = std::mem::take(&mut prepaint.wrap_updates);
+        let text_left = prepaint.text_left;
+        self.editor.update(cx, |editor, _| {
+            if editor.wrap_cache.len() > 100_000 {
+                editor.wrap_cache.clear();
+            }
+            editor.wrap_cache.extend(updates);
+            editor.autoscroll = false;
+            editor.layout = Some(Layout {
+                bounds,
+                text_left,
+                rows,
+            });
+        });
+    }
+}
