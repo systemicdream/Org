@@ -64,6 +64,9 @@ Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
 | Cmd/Ctrl+P | Go to file (fuzzy, by name or `#+TITLE`) |
 | Cmd/Ctrl+Shift+F | Search all files |
 | Cmd/Ctrl+B | Show / hide the sidebar (file tree and tags) |
+| Cmd/Ctrl+Shift+A, Cmd/Ctrl+Shift+T | Agenda, to-do list |
+| Cmd/Ctrl+N | Capture a task, note or journal entry |
+| Cmd/Ctrl+Shift+R | Refile the heading at the cursor |
 | Click a TODO keyword, priority, tag or date | Change it from a menu / date picker |
 | Right-click a heading, or Cmd/Ctrl+. | Heading menu (state, priority, tags, schedule, deadline, move…) |
 | `/` at the start of a line or after a space | Slash menu: headings, to-dos, lists, tables, code, quotes, dates… |
@@ -81,6 +84,18 @@ changes made elsewhere (Emacs, a sync tool) show up immediately, and if a file y
 edits in changes on disk, Aster asks which version to keep. Sync-conflict copies are marked ⚠.
 Aster stores nothing in your notes folder; it remembers the last folder and file in its config
 directory (override with `ASTER_SESSION_FILE`).
+
+## Agenda, capture, refile
+
+The agenda (Cmd/Ctrl+Shift+A) gathers what's scheduled, due and dated across the folder: a day
+or week view (repeating dates expanded; overdue tasks and upcoming deadlines on today), the list
+of open to-dos, and Org tag/property searches like `+work-home TODO="NEXT"`. In the agenda:
+`j`/`k` move, Enter opens, `x` marks done, `d`/`w`/`t`/`s` switch views, `b`/`f` step, `.` jumps
+to today.
+
+Capture (Cmd/Ctrl+N) adds a task or note to `inbox.org`, or a timestamped entry under today in
+`journal.org`. Refile moves a heading under any heading (or to the top level of any file) in the
+folder. Archive moves it to `<file>_archive` with Org's archive properties.
 
 ## Live preview
 
