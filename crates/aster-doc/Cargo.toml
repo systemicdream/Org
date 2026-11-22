@@ -1,0 +1,9 @@
+[package]
+name = "aster-doc"
+description = "Document model for Aster: edits, undo/redo, structural Org operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aster-org.workspace = true

@@ -28,6 +28,12 @@ pub struct HeadingInfo {
     pub tags: Vec<String>,
     /// Byte range of the whole section (heading line through its last descendant).
     pub range: Range<usize>,
+    /// End of the heading line, excluding its line terminator.
+    pub line_end: usize,
+    /// Byte range of the TODO keyword, if any.
+    pub todo_range: Option<Range<usize>>,
+    /// Where the title (after stars and TODO keyword) starts; a TODO keyword is inserted here.
+    pub title_start: usize,
 }
 
 impl OrgTree {
@@ -59,8 +65,15 @@ impl OrgTree {
         format!("{:#?}", self.org.document().syntax())
     }
 
+    /// TODO keywords in effect: (not-done states, done states), in cycle order.
+    pub fn todo_keywords(&self) -> (&[String], &[String]) {
+        let (todo, done) = &self.org.config().todo_keywords;
+        (todo, done)
+    }
+
     /// All headings in document order.
     pub fn headings(&self) -> Vec<HeadingInfo> {
+        let text = self.text();
         self.org
             .document()
             .syntax()
@@ -68,14 +81,40 @@ impl OrgTree {
             .filter_map(Headline::cast)
             .map(|h| {
                 let r = h.syntax().text_range();
+                let start = usize::from(r.start());
+                let level = h.level();
+                let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+                let line_end = if text[start..line_end].ends_with('\r') {
+                    line_end - 1
+                } else {
+                    line_end
+                };
+                let after_stars = start + level;
+                let rest = &text[after_stars..line_end];
+                let keyword_start = after_stars + (rest.len() - rest.trim_start().len());
+                let todo = h.todo_keyword().map(|t| t.to_string());
+                let todo_range = todo
+                    .as_ref()
+                    .filter(|t| text[keyword_start..line_end].starts_with(t.as_str()))
+                    .map(|t| keyword_start..keyword_start + t.len());
+                let title_start = match &todo_range {
+                    Some(r) => {
+                        let rest = &text[r.end..line_end];
+                        r.end + (rest.len() - rest.trim_start().len())
+                    }
+                    None => keyword_start,
+                };
                 HeadingInfo {
-                    level: h.level(),
-                    todo: h.todo_keyword().map(|t| t.to_string()),
+                    level,
+                    todo,
                     done: h.is_done(),
                     priority: h.priority().map(|t| t.to_string()),
                     title: h.title_raw().trim().to_string(),
                     tags: h.tags().map(|t| t.to_string()).collect(),
-                    range: usize::from(r.start())..usize::from(r.end()),
+                    range: start..usize::from(r.end()),
+                    line_end,
+                    todo_range,
+                    title_start,
                 }
             })
             .collect()
@@ -162,5 +201,21 @@ mod tests {
         assert!(!hs[0].done);
         assert_eq!(hs[1].todo.as_deref(), Some("CANCELLED"));
         assert!(hs[1].done);
+    }
+
+    #[test]
+    fn heading_positions() {
+        let text = "* TODO Title\r\nbody\n\n** Child\n* Next";
+        let hs = OrgTree::parse(text).headings();
+        assert_eq!(&text[hs[0].todo_range.clone().unwrap()], "TODO");
+        assert_eq!(&text[hs[0].title_start..hs[0].line_end], "Title");
+        // Sections include blank lines and descendants, up to the next sibling.
+        assert_eq!(
+            &text[hs[0].range.clone()],
+            "* TODO Title\r\nbody\n\n** Child\n"
+        );
+        assert_eq!(&text[hs[2].range.clone()], "* Next");
+        assert_eq!(hs[2].title_start, hs[2].range.start + 2);
+        assert_eq!(hs[2].line_end, text.len());
     }
 }

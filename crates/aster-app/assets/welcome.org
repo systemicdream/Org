@@ -18,5 +18,13 @@ Type TODO or DONE right after the stars.
 - [ ] Checkboxes look like this
 - [X] And this when done
 
+* Shortcuts to try
+(Cmd on macOS, Ctrl on Linux)
+- Cmd/Ctrl+Enter :: tick a checkbox, or step a heading through its TODO states (TODO → NEXT → DONE → none)
+- Alt+Enter :: new heading below this one
+- Tab / Shift+Tab on a heading :: nest it deeper / bring it back out (children follow)
+- Alt+Up / Alt+Down :: move a heading and everything under it
+- Cmd/Ctrl+Z :: undo, Cmd/Ctrl+Shift+Z :: redo
+
 Try typing `* ` at the start of a line to make a new heading.
 Unicode works too: 日本語, Ελληνικά, emoji 🎉.
