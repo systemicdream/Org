@@ -46,4 +46,15 @@ Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
 | Tab, Shift+Tab (on a heading line) | Demote, promote heading with its children |
 | Cmd/Ctrl+], Cmd/Ctrl+[ | Demote, promote the current subtree from anywhere in it |
 | Alt+Up, Alt+Down | Move subtree among its siblings |
-| Cmd/Ctrl+S, Cmd/Ctrl+Q | Save (atomic write), quit |
+| Click the arrow left of a heading | Fold / unfold it |
+| Cmd/Ctrl+Alt+[, Cmd/Ctrl+Alt+] | Fold, unfold the current heading |
+| Cmd/Ctrl+K then Cmd/Ctrl+0 / Cmd/Ctrl+J | Fold all, unfold all |
+| Alt+←/→ (macOS), Ctrl+←/→ (Linux) | Move by word (add Shift to select; Backspace/Delete to delete) |
+| Double-click, triple-click | Select word, line |
+| Cmd/Ctrl+F, Cmd+Alt+F (macOS) / Ctrl+H (Linux) | Find, find and replace |
+| Cmd/Ctrl+G, Cmd/Ctrl+Shift+G | Next, previous match |
+| Cmd/Ctrl+O, Cmd/Ctrl+S, Cmd/Ctrl+Shift+S | Open, save, save as |
+| Cmd/Ctrl+Q | Quit |
+
+Files save automatically one second after you stop typing (atomic write), and on quit.
+A file with `#+STARTUP: overview` opens with every heading folded.

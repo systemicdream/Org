@@ -256,6 +256,22 @@ Phases 2–4 are where most of the effort lands.
 - [x] Text storage decision: plain `String` for now ([0003](decisions/0003-text-storage.md))
 - [x] Hands-on test of the new commands
 
+
+### Phase 2 task list
+
+- [x] Soft wrap; headings render larger (variable line heights)
+- [x] Virtualized layout: only rows near the viewport are shaped (~3 ms/frame at 16k lines, release)
+- [x] Folding: gutter arrows, `…` marker, fold/unfold/fold all/unfold all, `#+STARTUP: overview`;
+      cursor and edits never land in hidden text
+- [x] Word movement/deletion, double-click word, triple-click line, drag by word/line, cursor blink
+- [x] Find bar: smart-case highlight, next/previous, replace, replace all (one undo step)
+- [x] Open, Save As, autosave (1 s after typing stops), save on quit
+- [x] Edit and Outline menus
+- [x] Hands-on test
+
+Deferred: error messages in the UI (currently stderr), reloading files changed on disk (Phase 5),
+`#+STARTUP: content`, remembering folds between sessions, rope storage (ADR 0003).
+
 ---
 
 ## 10. Risks

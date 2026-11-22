@@ -1,40 +1,54 @@
 //! The Org editor view, built on raw GPUI primitives.
 //!
-//! - IME / dead keys / emoji palette through [`EntityInputHandler`]
-//! - multi-line layout, cursor, keyboard + mouse selection, clipboard
+//! - IME / dead keys / emoji palette through [`EntityInputHandler`](gpui::EntityInputHandler)
+//! - soft-wrapped, virtualized layout with larger headings ([`element`])
+//! - folding, word movement, multi-click selection, blinking cursor
 //! - every change goes through an [`aster_doc::Document`] transaction, so it is undoable
 //! - outline commands (TODO cycling, promote/demote, move subtree, new heading, checkboxes)
-//! - styling driven by the parsed Org tree
-//!
-//! Still missing (Phase 2+): soft wrap, virtualization, word movement, folding, live preview.
+//! - search highlighting and replace, driven by [`FindBar`]
+//! - a single-line mode, used for the find bar's inputs
 
+mod element;
+mod find_bar;
+mod input;
 mod spans;
 
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
+use std::time::Duration;
 
-use aster_doc::{Document, EditOrigin, Selection, ops};
+use aster_doc::folds::Folds;
+use aster_doc::{Document, EditOrigin, Selection, ops, search, text};
+use element::EditorElement;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ScrollHandle, ShapedLine, SharedString, Style, UTF16Selection, Window, actions, div, fill,
-    point, prelude::*, px, relative, rgb, rgba, size,
+    App, Bounds, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Font,
+    Hsla, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollHandle, SharedString, Subscription, Task, TextRun, Window, WrappedLine, actions, div,
+    point, prelude::*, px, rgb,
 };
-use unicode_segmentation::UnicodeSegmentation;
+
+pub use find_bar::{FindBar, FindBarEvent};
 
 actions!(
     editor,
     [
         Backspace,
         Delete,
+        DeleteWordLeft,
+        DeleteWordRight,
         Left,
         Right,
         Up,
         Down,
+        WordLeft,
+        WordRight,
         SelectLeft,
         SelectRight,
         SelectUp,
         SelectDown,
+        SelectWordLeft,
+        SelectWordRight,
         SelectAll,
         LineStart,
         LineEnd,
@@ -43,6 +57,7 @@ actions!(
         DocStart,
         DocEnd,
         Newline,
+        ShiftEnter,
         Tab,
         ShowCharacterPalette,
         Paste,
@@ -50,6 +65,7 @@ actions!(
         Copy,
         Undo,
         Redo,
+        Cancel,
         // Outline commands
         ToggleDone,
         CycleTodoBackward,
@@ -61,10 +77,17 @@ actions!(
         MoveSubtreeUp,
         MoveSubtreeDown,
         Outdent,
+        // Folding
+        ToggleFold,
+        Fold,
+        Unfold,
+        FoldAll,
+        UnfoldAll,
     ]
 );
 
 const KEY_CONTEXT: &str = "OrgEditor";
+const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 /// Register the editor's default (platform-standard) keybindings.
 pub fn bind_keys(cx: &mut App) {
@@ -85,7 +108,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-home", SelectLineStart, ctx),
         KeyBinding::new("shift-end", SelectLineEnd, ctx),
         KeyBinding::new("enter", Newline, ctx),
+        KeyBinding::new("shift-enter", ShiftEnter, ctx),
         KeyBinding::new("tab", Tab, ctx),
+        KeyBinding::new("escape", Cancel, ctx),
         KeyBinding::new("secondary-a", SelectAll, ctx),
         KeyBinding::new("secondary-v", Paste, ctx),
         KeyBinding::new("secondary-c", Copy, ctx),
@@ -102,6 +127,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-[", PromoteSubtree, ctx),
         KeyBinding::new("alt-up", MoveSubtreeUp, ctx),
         KeyBinding::new("alt-down", MoveSubtreeDown, ctx),
+        // Folding (VS Code-style).
+        KeyBinding::new("secondary-alt-[", Fold, ctx),
+        KeyBinding::new("secondary-alt-]", Unfold, ctx),
+        KeyBinding::new("secondary-k secondary-0", FoldAll, ctx),
+        KeyBinding::new("secondary-k secondary-j", UnfoldAll, ctx),
     ];
     if cfg!(target_os = "macos") {
         bindings.extend([
@@ -111,6 +141,12 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("cmd-shift-right", SelectLineEnd, ctx),
             KeyBinding::new("cmd-up", DocStart, ctx),
             KeyBinding::new("cmd-down", DocEnd, ctx),
+            KeyBinding::new("alt-left", WordLeft, ctx),
+            KeyBinding::new("alt-right", WordRight, ctx),
+            KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
+            KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("alt-delete", DeleteWordRight, ctx),
             KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
         ]);
     } else {
@@ -118,60 +154,204 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-y", Redo, ctx),
             KeyBinding::new("ctrl-home", DocStart, ctx),
             KeyBinding::new("ctrl-end", DocEnd, ctx),
+            KeyBinding::new("ctrl-left", WordLeft, ctx),
+            KeyBinding::new("ctrl-right", WordRight, ctx),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
+            KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
         ]);
     }
     cx.bind_keys(bindings);
 }
 
-/// Emitted whenever the buffer text changes.
-pub struct Edited;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// The text changed.
+    Edited,
+    /// Enter (or Shift+Enter when `back`) in a single-line editor.
+    Confirm { back: bool },
+    /// Escape.
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorMode {
+    /// A full Org document: wrapping, folding, outline commands.
+    Full,
+    /// A one-line plain input (e.g. the find bar). Enter emits [`EditorEvent::Confirm`].
+    SingleLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Granularity {
+    Char,
+    Word,
+    Line,
+}
+
+/// Text metrics captured during paint, used when actions need to lay out lines.
+#[derive(Clone)]
+struct Metrics {
+    font: Font,
+    font_size: Pixels,
+    color: Hsla,
+    wrap_width: Option<Pixels>,
+}
+
+/// Where each visible row was laid out in the last frame.
+struct Layout {
+    bounds: Bounds<Pixels>,
+    text_left: Pixels,
+    rows: Vec<RowLayout>,
+}
+
+struct RowLayout {
+    row: usize,
+    /// Relative to `Layout::bounds.top()`.
+    top: Pixels,
+    line_height: Pixels,
+    /// Shaped only for rows near the viewport; others are shaped on demand.
+    wrapped: Option<WrappedLine>,
+    visual_lines: usize,
+}
+
+impl RowLayout {
+    fn height(&self) -> Pixels {
+        self.line_height * self.visual_lines as f32
+    }
+}
+
+struct SearchState {
+    query: String,
+    matches: Vec<Range<usize>>,
+    active: Option<usize>,
+}
 
 pub struct OrgEditor {
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
+    mode: EditorMode,
+    placeholder: Option<SharedString>,
     doc: Document,
     /// Byte offset of the start of each line. Always starts with 0.
     line_starts: Vec<usize>,
+    /// Org syntax styling, sorted by start. Recomputed on every change.
+    org_spans: spans::Spans,
+    /// Per line: (text size scale, hash of the line's text). Recomputed on every change.
+    row_meta: Vec<(f32, u64)>,
+    folds: Folds,
+    hidden: Vec<Range<usize>>,
+    visible_rows: Vec<usize>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     /// Preferred x position for vertical movement.
     goal_x: Option<Pixels>,
     is_selecting: bool,
+    drag: (Granularity, Range<usize>),
     autoscroll: bool,
+    metrics: Option<Metrics>,
     layout: Option<Layout>,
+    /// Visual line count per (line text, scale, wrap width), so off-screen rows keep stable
+    /// heights without being shaped.
+    wrap_cache: HashMap<u64, usize>,
+    search: Option<SearchState>,
+    cursor_visible: bool,
+    blink_task: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
 }
 
-/// Geometry from the last paint, used for hit-testing and IME bounds.
-struct Layout {
-    bounds: Bounds<Pixels>,
-    line_height: Pixels,
-    lines: Vec<ShapedLine>,
-}
-
-impl EventEmitter<Edited> for OrgEditor {}
+impl EventEmitter<EditorEvent> for OrgEditor {}
 
 impl OrgEditor {
-    pub fn new(text: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(text: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_mode(text, EditorMode::Full, window, cx)
+    }
+
+    pub fn single_line(
+        placeholder: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::with_mode(String::new(), EditorMode::SingleLine, window, cx);
+        this.placeholder = Some(placeholder.into());
+        this
+    }
+
+    fn with_mode(
+        text: String,
+        mode: EditorMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus_handle = cx.focus_handle();
+        let subscriptions = vec![
+            cx.on_focus(&focus_handle, window, |this, _, cx| this.restart_blink(cx)),
+            cx.on_blur(&focus_handle, window, |this, _, cx| {
+                this.blink_task = None;
+                this.cursor_visible = true;
+                cx.notify();
+            }),
+        ];
         let mut this = Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             scroll_handle: ScrollHandle::new(),
+            mode,
+            placeholder: None,
             doc: Document::new(text),
             line_starts: Vec::new(),
+            row_meta: Vec::new(),
+            org_spans: Vec::new(),
+            folds: Folds::default(),
+            hidden: Vec::new(),
+            visible_rows: Vec::new(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
             goal_x: None,
             is_selecting: false,
+            drag: (Granularity::Char, 0..0),
             autoscroll: false,
+            metrics: None,
             layout: None,
+            wrap_cache: HashMap::new(),
+            search: None,
+            cursor_visible: true,
+            blink_task: None,
+            _subscriptions: subscriptions,
         };
+        if mode == EditorMode::Full && startup_folded(this.doc.text()) {
+            this.folds.fold_all(this.doc.headings(), this.doc.text());
+        }
         this.recompute_lines();
         this
     }
 
     pub fn text(&self) -> &str {
         self.doc.text()
+    }
+
+    /// Replace the whole text (e.g. a single-line input being reset). Not undoable.
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.doc = Document::new(text);
+        self.folds = Folds::default();
+        self.set_selection(Selection::cursor(text.len()));
+        self.after_change(cx);
+    }
+
+    /// The selected text (empty when nothing is selected).
+    pub fn selected_text(&self) -> &str {
+        &self.doc.text()[self.selected_range.clone()]
+    }
+
+    /// Select everything (used when focusing an input).
+    pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        self.set_selection(Selection {
+            anchor: 0,
+            head: self.doc.text().len(),
+        });
+        cx.notify();
     }
 
     // ---- buffer -------------------------------------------------------------------------
@@ -185,6 +365,19 @@ impl OrgEditor {
         origin: EditOrigin,
         cx: &mut Context<Self>,
     ) {
+        // Edits touching folded text unfold it first, so nothing changes out of sight.
+        let mut revealed = false;
+        for pos in [range.start, range.end] {
+            revealed |= self.folds.reveal(pos, self.doc.headings(), self.doc.text());
+        }
+        if revealed {
+            self.recompute_lines();
+        }
+        let new_text = if self.mode == EditorMode::SingleLine {
+            new_text.replace(['\r', '\n'], " ")
+        } else {
+            new_text.to_string()
+        };
         let before = self.selection();
         let cursor = range.start + new_text.len();
         self.doc.apply(
@@ -198,16 +391,24 @@ impl OrgEditor {
     }
 
     fn after_change(&mut self, cx: &mut Context<Self>) {
+        if let Some(tx) = self.doc.last_change() {
+            self.folds.remap(tx, self.doc.headings(), self.doc.text());
+        }
         self.recompute_lines();
+        self.refresh_search();
         self.marked_range = None;
         self.goal_x = None;
         self.autoscroll = true;
-        cx.emit(Edited);
+        self.restart_blink(cx);
+        cx.emit(EditorEvent::Edited);
         cx.notify();
     }
 
     /// Apply a structural command's result, if it produced one.
     fn apply_op(&mut self, result: Option<ops::OpResult>, cx: &mut Context<Self>) {
+        if self.mode != EditorMode::Full {
+            return;
+        }
         let Some(result) = result else { return };
         let before = self.selection();
         self.doc
@@ -216,6 +417,207 @@ impl OrgEditor {
         self.set_selection(result.selection);
         self.after_change(cx);
     }
+
+    fn recompute_lines(&mut self) {
+        let text = self.doc.text();
+        self.line_starts.clear();
+        self.line_starts.push(0);
+        self.line_starts
+            .extend(text.match_indices('\n').map(|(i, _)| i + 1));
+        self.row_meta = (0..self.line_starts.len())
+            .map(|row| {
+                let mut h = DefaultHasher::new();
+                self.doc.text()[self.line_range(row)].hash(&mut h);
+                (self.compute_row_scale(row), h.finish())
+            })
+            .collect();
+        self.org_spans = if self.mode == EditorMode::Full {
+            let mut s = spans::style_spans(self.doc.headings(), self.doc.text());
+            // Stable: spans starting at the same offset keep their override order.
+            s.sort_by_key(|(r, _)| r.start);
+            s
+        } else {
+            Vec::new()
+        };
+        let text = self.doc.text();
+        self.hidden = self.folds.hidden_ranges(self.doc.headings(), text);
+        let hidden = &self.hidden;
+        self.visible_rows = (0..self.line_starts.len())
+            .filter(|&row| {
+                let start = self.line_starts[row];
+                let i = hidden.partition_point(|r| r.end <= start);
+                hidden.get(i).is_none_or(|r| start < r.start)
+            })
+            .collect();
+    }
+
+    /// Byte range of line `row`, excluding its line terminator (`\n` or `\r\n`).
+    fn line_range(&self, row: usize) -> Range<usize> {
+        let text = self.doc.text();
+        let start = self.line_starts[row];
+        let mut end = self
+            .line_starts
+            .get(row + 1)
+            .map_or(text.len(), |next| next - 1);
+        if end > start && text.as_bytes()[end - 1] == b'\r' && end < text.len() {
+            end -= 1;
+        }
+        start..end
+    }
+
+    fn row_for_offset(&self, offset: usize) -> usize {
+        self.line_starts.partition_point(|&s| s <= offset) - 1
+    }
+
+    /// The hidden range containing `offset`, if any.
+    fn hidden_at(&self, offset: usize) -> Option<Range<usize>> {
+        let i = self.hidden.partition_point(|r| r.end <= offset);
+        self.hidden.get(i).filter(|r| r.start <= offset).cloned()
+    }
+
+    /// Move `offset` out of folded text: forward to after it, or back to the heading line end.
+    fn clamp_visible(&self, offset: usize, forward: bool) -> usize {
+        match self.hidden_at(offset) {
+            Some(r) if forward => r.end,
+            Some(r) => {
+                let text = self.doc.text();
+                let mut p = r.start;
+                if text[..p].ends_with('\n') {
+                    p -= 1;
+                }
+                if text[..p].ends_with('\r') {
+                    p -= 1;
+                }
+                p
+            }
+            None => offset,
+        }
+    }
+
+    /// Heading level if `row` is a heading line.
+    fn heading_level(&self, row: usize) -> Option<usize> {
+        let start = self.line_starts[row];
+        let hs = self.doc.headings();
+        let i = hs.partition_point(|h| h.range.start < start);
+        hs.get(i)
+            .filter(|h| h.range.start == start)
+            .map(|h| h.level)
+    }
+
+    /// Text size multiplier for a row (headings are larger).
+    fn row_scale(&self, row: usize) -> f32 {
+        self.row_meta.get(row).map_or(1.0, |m| m.0)
+    }
+
+    fn compute_row_scale(&self, row: usize) -> f32 {
+        if self.mode != EditorMode::Full {
+            return 1.0;
+        }
+        match self.heading_level(row) {
+            Some(1) => 1.5,
+            Some(2) => 1.3,
+            Some(3) => 1.15,
+            _ => 1.0,
+        }
+    }
+
+    fn wrap_key(&self, row: usize, scale: f32, wrap_width: Option<Pixels>) -> u64 {
+        let mut h = DefaultHasher::new();
+        self.row_meta.get(row).map(|m| m.1).hash(&mut h);
+        scale.to_bits().hash(&mut h);
+        wrap_width.map(|w| f32::from(w).to_bits()).hash(&mut h);
+        h.finish()
+    }
+
+    /// Styled ranges within one line: Org syntax (cached per edit), search matches, and the
+    /// IME composition. Spans never cross lines, so each list is searched by start offset.
+    fn row_styles(&self, range: Range<usize>) -> spans::Spans {
+        let in_row = |r: &Range<usize>| r.start >= range.start && r.start <= range.end;
+        let i = self
+            .org_spans
+            .partition_point(|(r, _)| r.start < range.start);
+        let mut out: spans::Spans = self.org_spans[i..]
+            .iter()
+            .take_while(|(r, _)| r.start <= range.end)
+            .cloned()
+            .collect();
+        if let Some(search) = &self.search {
+            let i = search.matches.partition_point(|m| m.start < range.start);
+            for (j, m) in search.matches[i..]
+                .iter()
+                .enumerate()
+                .take_while(|(_, m)| in_row(m))
+            {
+                let bg = if Some(i + j) == search.active {
+                    0xfb923c99
+                } else {
+                    0xfde04780
+                };
+                out.push((
+                    m.clone(),
+                    spans::SpanStyle {
+                        background: Some(gpui::rgba(bg).into()),
+                        ..Default::default()
+                    },
+                ));
+            }
+        }
+        if let Some(marked) = self.marked_range.as_ref().filter(|m| in_row(m)) {
+            out.push((
+                marked.clone(),
+                spans::SpanStyle {
+                    underline: true,
+                    ..Default::default()
+                },
+            ));
+        }
+        out
+    }
+
+    /// Lay out one row with the given styles.
+    fn shape_row(&self, row: usize, metrics: &Metrics, window: &mut Window) -> WrappedLine {
+        let range = self.line_range(row);
+        let styles = self.row_styles(range.clone());
+        let scale = self.row_scale(row);
+        let base = TextRun {
+            len: 0,
+            font: metrics.font.clone(),
+            color: metrics.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = spans::runs_for_range(&base, &styles, range.clone());
+        let text: SharedString = self.doc.text()[range].to_string().into();
+        window
+            .text_system()
+            .shape_text(
+                text,
+                metrics.font_size * scale,
+                &runs,
+                metrics.wrap_width,
+                None,
+            )
+            .ok()
+            .and_then(|mut lines| lines.pop())
+            .unwrap_or_default()
+    }
+
+    /// Make sure layout row `i` is shaped (rows far from the viewport are shaped lazily).
+    fn ensure_shaped(&mut self, i: usize, window: &mut Window) {
+        let (Some(layout), Some(metrics)) = (self.layout.as_ref(), self.metrics.clone()) else {
+            return;
+        };
+        if layout.rows[i].wrapped.is_some() {
+            return;
+        }
+        let wrapped = self.shape_row(layout.rows[i].row, &metrics, window);
+        if let Some(layout) = self.layout.as_mut() {
+            layout.rows[i].wrapped = Some(wrapped);
+        }
+    }
+
+    // ---- selection ----------------------------------------------------------------------
 
     fn selection(&self) -> Selection {
         let r = &self.selected_range;
@@ -237,187 +639,407 @@ impl OrgEditor {
         self.selection_reversed = sel.head < sel.anchor;
     }
 
-    fn cursor_on_heading_line(&self) -> bool {
-        let row = self.row_for_offset(self.cursor_offset());
-        let line = &self.doc.text()[self.line_range(row)];
-        let stars = line.bytes().take_while(|&b| b == b'*').count();
-        stars > 0 && line[stars..].starts_with(' ')
-    }
-
-    fn recompute_lines(&mut self) {
-        self.line_starts.clear();
-        self.line_starts.push(0);
-        self.line_starts
-            .extend(self.doc.text().match_indices('\n').map(|(i, _)| i + 1));
-    }
-
-    fn line_count(&self) -> usize {
-        self.line_starts.len()
-    }
-
-    /// Byte range of line `row`, excluding its line terminator (`\n` or `\r\n`).
-    fn line_range(&self, row: usize) -> Range<usize> {
-        let start = self.line_starts[row];
-        let mut end = self
-            .line_starts
-            .get(row + 1)
-            .map_or(self.doc.text().len(), |next| next - 1);
-        if end > start
-            && self.doc.text().as_bytes()[end - 1] == b'\r'
-            && end < self.doc.text().len()
-        {
-            end -= 1;
-        }
-        start..end
-    }
-
-    fn row_for_offset(&self, offset: usize) -> usize {
-        self.line_starts.partition_point(|&s| s <= offset) - 1
-    }
-
-    fn previous_boundary(&self, offset: usize) -> usize {
-        if offset == 0 {
-            return 0;
-        }
-        // Treat "\r\n" as one step.
-        if self.doc.text()[..offset].ends_with("\r\n") {
-            return offset - 2;
-        }
-        self.doc.text()[..offset]
-            .grapheme_indices(true)
-            .next_back()
-            .map_or(0, |(i, _)| i)
-    }
-
-    fn next_boundary(&self, offset: usize) -> usize {
-        self.doc.text()[offset..]
-            .graphemes(true)
-            .next()
-            .map_or(self.doc.text().len(), |g| offset + g.len())
-    }
-
-    // ---- selection ----------------------------------------------------------------------
-
     fn cursor_offset(&self) -> usize {
-        if self.selection_reversed {
-            self.selected_range.start
-        } else {
-            self.selected_range.end
-        }
+        self.selection().head
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.doc.seal_undo_group();
-        self.selected_range = offset..offset;
-        self.selection_reversed = false;
+        self.set_selection(Selection::cursor(offset));
         self.autoscroll = true;
+        self.restart_blink(cx);
         cx.notify();
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if self.selection_reversed {
-            self.selected_range.start = offset;
+        let anchor = self.selection().anchor;
+        self.set_selection(Selection {
+            anchor,
+            head: offset,
+        });
+        self.autoscroll = true;
+        self.restart_blink(cx);
+        cx.notify();
+    }
+
+    fn cursor_on_heading_line(&self) -> bool {
+        self.heading_level(self.row_for_offset(self.cursor_offset()))
+            .is_some()
+    }
+
+    fn restart_blink(&mut self, cx: &mut Context<Self>) {
+        self.cursor_visible = true;
+        self.blink_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(BLINK_INTERVAL).await;
+                let alive = this.update(cx, |editor, cx| {
+                    editor.cursor_visible = !editor.cursor_visible;
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    // ---- geometry -----------------------------------------------------------------------
+
+    fn layout_index_for_row(&self, row: usize) -> Option<usize> {
+        let layout = self.layout.as_ref()?;
+        layout.rows.binary_search_by_key(&row, |r| r.row).ok()
+    }
+
+    /// Offset one visual line up/down from the cursor, keeping the preferred x position.
+    fn vertical_target(&mut self, down: bool, window: &mut Window) -> usize {
+        let cursor = self.cursor_offset();
+        let row = self.row_for_offset(cursor);
+        let Some(i) = self.layout_index_for_row(row) else {
+            return cursor;
+        };
+        self.ensure_shaped(i, window);
+        let layout = self.layout.as_ref().expect("layout exists");
+        let r = &layout.rows[i];
+        let col = cursor.min(self.line_range(row).end) - self.line_starts[row];
+        let pos = r
+            .wrapped
+            .as_ref()
+            .and_then(|w| w.position_for_index(col, r.line_height))
+            .unwrap_or_default();
+        let goal_x = *self.goal_x.get_or_insert(pos.x);
+        let visual = (pos.y / r.line_height).round() as usize;
+
+        let (target_i, target_visual) = if down {
+            if visual + 1 < r.visual_lines {
+                (i, Some(visual + 1))
+            } else if i + 1 < layout.rows.len() {
+                (i + 1, Some(0))
+            } else {
+                return self.doc.text().len();
+            }
+        } else if visual > 0 {
+            (i, Some(visual - 1))
+        } else if i > 0 {
+            (i - 1, None) // last visual line of the previous row
         } else {
-            self.selected_range.end = offset;
+            return 0;
+        };
+        self.ensure_shaped(target_i, window);
+        let layout = self.layout.as_ref().expect("layout exists");
+        let t = &layout.rows[target_i];
+        let Some(wrapped) = t.wrapped.as_ref() else {
+            return cursor;
+        };
+        let lines = wrapped.wrap_boundaries().len() + 1;
+        let v = target_visual.unwrap_or(lines - 1).min(lines - 1);
+        let y = t.line_height * v as f32 + t.line_height / 2.;
+        let col = match wrapped.closest_index_for_position(point(goal_x, y), t.line_height) {
+            Ok(i) | Err(i) => i,
+        };
+        let range = self.line_range(t.row);
+        (range.start + col).min(range.end)
+    }
+
+    /// Document offset at a window position.
+    fn index_for_position(&mut self, position: Point<Pixels>, window: &mut Window) -> usize {
+        let Some(layout) = self.layout.as_ref() else {
+            return 0;
+        };
+        if layout.rows.is_empty() {
+            return 0;
         }
-        if self.selected_range.end < self.selected_range.start {
-            self.selection_reversed = !self.selection_reversed;
-            self.selected_range = self.selected_range.end..self.selected_range.start;
+        let y = position.y - layout.bounds.top();
+        if y < px(0.) {
+            return 0;
         }
+        let i = layout
+            .rows
+            .partition_point(|r| r.top + r.height() <= y)
+            .min(layout.rows.len() - 1);
+        let x = position.x - layout.text_left;
+        self.ensure_shaped(i, window);
+        let layout = self.layout.as_ref().expect("layout exists");
+        let r = &layout.rows[i];
+        let range = self.line_range(r.row);
+        if y >= r.top + r.height() {
+            return range.end;
+        }
+        let local = point(x.max(px(0.)), (y - r.top).max(px(0.)));
+        let col = r.wrapped.as_ref().map_or(0, |w| {
+            match w.closest_index_for_position(local, r.line_height) {
+                Ok(i) | Err(i) => i,
+            }
+        });
+        (range.start + col).min(range.end)
+    }
+
+    /// Window-space rectangle of the character range, for IME candidate windows.
+    fn bounds_for_offsets(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let layout = self.layout.as_ref()?;
+        let row = self.row_for_offset(range.start);
+        let r = &layout.rows[self.layout_index_for_row(row)?];
+        let wrapped = r.wrapped.as_ref()?;
+        let start = self.line_starts[row];
+        let end = range.end.min(self.line_range(row).end);
+        let p0 = wrapped.position_for_index(range.start - start, r.line_height)?;
+        let p1 = wrapped
+            .position_for_index(end - start, r.line_height)
+            .unwrap_or(p0);
+        let origin = point(layout.text_left, layout.bounds.top() + r.top);
+        Some(Bounds::from_corners(
+            origin + p0,
+            origin + point(p1.x.max(p0.x), p0.y + r.line_height),
+        ))
+    }
+
+    // ---- search -------------------------------------------------------------------------
+
+    /// Highlight matches of `query` and select the first one at or after the cursor.
+    pub fn set_search_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        if query.is_empty() {
+            self.search = None;
+            cx.notify();
+            return;
+        }
+        let matches = search::find_all(self.doc.text(), query);
+        let from = self.selected_range.start;
+        let active = (!matches.is_empty())
+            .then(|| matches.iter().position(|m| m.start >= from).unwrap_or(0));
+        self.search = Some(SearchState {
+            query: query.to_string(),
+            matches,
+            active,
+        });
+        self.select_active_match(cx);
+    }
+
+    pub fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.search = None;
+        cx.notify();
+    }
+
+    /// (1-based active match, total matches)
+    pub fn search_status(&self) -> (Option<usize>, usize) {
+        self.search
+            .as_ref()
+            .map_or((None, 0), |s| (s.active.map(|i| i + 1), s.matches.len()))
+    }
+
+    pub fn search_next(&mut self, back: bool, cx: &mut Context<Self>) {
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
+        let n = s.matches.len();
+        if n == 0 {
+            return;
+        }
+        s.active = Some(match s.active {
+            Some(i) if back => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None => 0,
+        });
+        self.select_active_match(cx);
+    }
+
+    /// Replace the active match (if selected) and move to the next one.
+    pub fn replace_active(&mut self, replacement: &str, cx: &mut Context<Self>) {
+        let Some(m) = self
+            .search
+            .as_ref()
+            .and_then(|s| s.active.map(|i| s.matches[i].clone()))
+        else {
+            return;
+        };
+        self.doc.seal_undo_group();
+        self.edit(m, replacement, EditOrigin::Other, cx);
+        self.doc.seal_undo_group();
+        let from = self.cursor_offset();
+        if let Some(s) = self.search.as_mut() {
+            s.active = (!s.matches.is_empty())
+                .then(|| s.matches.iter().position(|m| m.start >= from).unwrap_or(0));
+        }
+        self.select_active_match(cx);
+    }
+
+    /// Replace every match as a single undo step. Returns how many were replaced.
+    pub fn replace_all(&mut self, replacement: &str, cx: &mut Context<Self>) -> usize {
+        let Some(matches) = self.search.as_ref().map(|s| s.matches.clone()) else {
+            return 0;
+        };
+        if matches.is_empty() {
+            return 0;
+        }
+        let tx = search::replace_all(&matches, replacement);
+        let before = self.selection();
+        let after = before.map(&tx);
+        self.doc.apply(tx, before, after, EditOrigin::Other);
+        self.doc.seal_undo_group();
+        self.set_selection(after);
+        self.after_change(cx);
+        matches.len()
+    }
+
+    fn refresh_search(&mut self) {
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
+        s.matches = search::find_all(self.doc.text(), &s.query);
+        s.active = s.active.filter(|&i| i < s.matches.len());
+    }
+
+    fn select_active_match(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = self
+            .search
+            .as_ref()
+            .and_then(|s| s.active.map(|i| s.matches[i].clone()))
+        else {
+            cx.notify();
+            return;
+        };
+        if self
+            .folds
+            .reveal(m.start, self.doc.headings(), self.doc.text())
+        {
+            self.recompute_lines();
+        }
+        self.doc.seal_undo_group();
+        self.set_selection(Selection {
+            anchor: m.start,
+            head: m.end,
+        });
         self.autoscroll = true;
         cx.notify();
     }
 
-    /// Offset one line up/down from the cursor, keeping the preferred x position.
-    fn vertical_target(&mut self, down: bool) -> usize {
-        let cursor = self.cursor_offset();
-        let row = self.row_for_offset(cursor);
-        let Some(layout) = self.layout.as_ref() else {
-            return cursor;
-        };
-        let goal_x = *self
-            .goal_x
-            .get_or_insert_with(|| layout.lines[row].x_for_index(cursor - self.line_starts[row]));
-        if down && row + 1 >= self.line_count() {
-            return self.doc.text().len();
-        }
-        if !down && row == 0 {
-            return 0;
-        }
-        let target = if down { row + 1 } else { row - 1 };
-        let col = layout.lines[target].closest_index_for_x(goal_x);
-        self.line_starts[target] + col
+    // ---- folding ------------------------------------------------------------------------
+
+    /// The heading whose section contains the cursor (innermost).
+    fn heading_at_cursor(&self) -> Option<aster_org::HeadingInfo> {
+        let at = self.cursor_offset();
+        let len = self.doc.text().len();
+        self.doc
+            .headings()
+            .iter()
+            .rev()
+            .find(|h| h.range.start <= at && (at < h.range.end || h.range.end == len))
+            .cloned()
     }
 
-    fn index_for_position(&self, position: Point<Pixels>) -> usize {
-        let Some(layout) = self.layout.as_ref() else {
-            return 0;
-        };
-        if position.y < layout.bounds.top() {
-            return 0;
-        }
-        let row = ((position.y - layout.bounds.top()) / layout.line_height).floor() as usize;
-        if row >= self.line_count() {
-            return self.doc.text().len();
-        }
-        let col = layout.lines[row].closest_index_for_x(position.x - layout.bounds.left());
-        self.line_starts[row] + col
+    fn set_fold(&mut self, h: &aster_org::HeadingInfo, folded: bool, cx: &mut Context<Self>) {
+        self.folds.set(h, self.doc.text(), folded);
+        self.folds_changed(cx);
+    }
+
+    fn folds_changed(&mut self, cx: &mut Context<Self>) {
+        self.recompute_lines();
+        // Don't leave the cursor inside hidden text.
+        let sel = self.selection();
+        let fix = |p: usize| self.clamp_visible(p, false);
+        let (anchor, head) = (fix(sel.anchor), fix(sel.head));
+        self.set_selection(Selection { anchor, head });
+        self.autoscroll = true;
+        cx.notify();
+    }
+
+    fn toggle_fold_heading(&mut self, h: &aster_org::HeadingInfo, cx: &mut Context<Self>) {
+        let folded = self.folds.is_folded(h.range.start);
+        self.set_fold(h, !folded, cx);
     }
 
     // ---- actions ------------------------------------------------------------------------
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        if self.selected_range.is_empty() {
-            self.move_to(self.previous_boundary(self.cursor_offset()), cx);
+        let to = if self.selected_range.is_empty() {
+            let p = text::prev_grapheme(self.doc.text(), self.cursor_offset());
+            self.clamp_visible(p, false)
         } else {
-            self.move_to(self.selected_range.start, cx);
-        }
+            self.selected_range.start
+        };
+        self.move_to(to, cx);
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        if self.selected_range.is_empty() {
-            self.move_to(self.next_boundary(self.cursor_offset()), cx);
+        let to = if self.selected_range.is_empty() {
+            let p = text::next_grapheme(self.doc.text(), self.cursor_offset());
+            self.clamp_visible(p, true)
         } else {
-            self.move_to(self.selected_range.end, cx);
-        }
+            self.selected_range.end
+        };
+        self.move_to(to, cx);
     }
 
-    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        let target = self.vertical_target(false);
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        let p = text::prev_word_start(self.doc.text(), self.cursor_offset());
+        self.move_to(self.clamp_visible(p, false), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        let p = text::next_word_end(self.doc.text(), self.cursor_offset());
+        self.move_to(self.clamp_visible(p, true), cx);
+    }
+
+    fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selected_range.is_empty() && self.goal_x.is_none() {
+            self.set_selection(Selection::cursor(self.selected_range.start));
+        }
+        let target = self.vertical_target(false, window);
         self.move_to(target, cx);
     }
 
-    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        let target = self.vertical_target(true);
+    fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selected_range.is_empty() && self.goal_x.is_none() {
+            self.set_selection(Selection::cursor(self.selected_range.end));
+        }
+        let target = self.vertical_target(true, window);
         self.move_to(target, cx);
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.previous_boundary(self.cursor_offset()), cx);
+        let p = text::prev_grapheme(self.doc.text(), self.cursor_offset());
+        self.select_to(self.clamp_visible(p, false), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        let p = text::next_grapheme(self.doc.text(), self.cursor_offset());
+        self.select_to(self.clamp_visible(p, true), cx);
     }
 
-    fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        let target = self.vertical_target(false);
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        let p = text::prev_word_start(self.doc.text(), self.cursor_offset());
+        self.select_to(self.clamp_visible(p, false), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        let p = text::next_word_end(self.doc.text(), self.cursor_offset());
+        self.select_to(self.clamp_visible(p, true), cx);
+    }
+
+    fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_target(false, window);
         self.select_to(target, cx);
     }
 
-    fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        let target = self.vertical_target(true);
+    fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_target(true, window);
         self.select_to(target, cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.move_to(0, cx);
-        self.select_to(self.doc.text().len(), cx);
+        self.set_selection(Selection {
+            anchor: 0,
+            head: self.doc.text().len(),
+        });
+        self.restart_blink(cx);
+        cx.notify();
     }
 
     fn line_start(&mut self, _: &LineStart, _: &mut Window, cx: &mut Context<Self>) {
@@ -451,13 +1073,14 @@ impl OrgEditor {
 
     fn doc_end(&mut self, _: &DocEnd, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.move_to(self.doc.text().len(), cx);
+        let end = self.clamp_visible(self.doc.text().len(), false);
+        self.move_to(end, cx);
     }
 
     fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
         let range = if self.selected_range.is_empty() {
             let cursor = self.cursor_offset();
-            self.previous_boundary(cursor)..cursor
+            text::prev_grapheme(self.doc.text(), cursor)..cursor
         } else {
             self.selected_range.clone()
         };
@@ -467,14 +1090,38 @@ impl OrgEditor {
     fn delete(&mut self, _: &Delete, _: &mut Window, cx: &mut Context<Self>) {
         let range = if self.selected_range.is_empty() {
             let cursor = self.cursor_offset();
-            cursor..self.next_boundary(cursor)
+            cursor..text::next_grapheme(self.doc.text(), cursor)
         } else {
             self.selected_range.clone()
         };
         self.edit(range, "", EditOrigin::Delete, cx);
     }
 
+    fn delete_word_left(&mut self, _: &DeleteWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            text::prev_word_start(self.doc.text(), cursor)..cursor
+        } else {
+            self.selected_range.clone()
+        };
+        self.edit(range, "", EditOrigin::Other, cx);
+    }
+
+    fn delete_word_right(&mut self, _: &DeleteWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            cursor..text::next_word_end(self.doc.text(), cursor)
+        } else {
+            self.selected_range.clone()
+        };
+        self.edit(range, "", EditOrigin::Other, cx);
+    }
+
     fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.emit(EditorEvent::Confirm { back: false });
+            return;
+        }
         // Preserve the file's line-ending style.
         let eol = if self.doc.text().contains("\r\n") {
             "\r\n"
@@ -484,19 +1131,37 @@ impl OrgEditor {
         self.edit(self.selected_range.clone(), eol, EditOrigin::Insert, cx);
     }
 
+    fn shift_enter(&mut self, _: &ShiftEnter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::SingleLine {
+            cx.emit(EditorEvent::Confirm { back: true });
+        } else {
+            self.newline(&Newline, window, cx);
+        }
+    }
+
+    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(EditorEvent::Cancel);
+    }
+
     /// On a heading line, Tab demotes the heading and its children; elsewhere it indents.
     fn tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
-        if self.cursor_on_heading_line() {
-            let r = ops::demote(&self.doc, self.selection(), true);
-            self.apply_op(r, cx);
-        } else {
-            self.edit(self.selected_range.clone(), "  ", EditOrigin::Insert, cx);
+        match self.mode {
+            EditorMode::SingleLine => cx.propagate(),
+            EditorMode::Full if self.cursor_on_heading_line() => {
+                let r = ops::demote(&self.doc, self.selection(), true);
+                self.apply_op(r, cx);
+            }
+            EditorMode::Full => {
+                self.edit(self.selected_range.clone(), "  ", EditOrigin::Insert, cx);
+            }
         }
     }
 
     /// On a heading line, Shift+Tab promotes the heading and its children.
     fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.cursor_on_heading_line() {
+        if self.mode == EditorMode::SingleLine {
+            cx.propagate();
+        } else if self.cursor_on_heading_line() {
             let r = ops::promote(&self.doc, self.selection(), true);
             self.apply_op(r, cx);
         }
@@ -569,6 +1234,37 @@ impl OrgEditor {
         self.apply_op(r, cx);
     }
 
+    fn toggle_fold(&mut self, _: &ToggleFold, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(h) = self.heading_at_cursor() {
+            self.toggle_fold_heading(&h, cx);
+        }
+    }
+
+    fn fold(&mut self, _: &Fold, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(h) = self.heading_at_cursor() {
+            self.set_fold(&h, true, cx);
+        }
+    }
+
+    fn unfold(&mut self, _: &Unfold, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(h) = self.heading_at_cursor() {
+            self.set_fold(&h, false, cx);
+        }
+    }
+
+    fn fold_all(&mut self, _: &FoldAll, _: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != EditorMode::Full {
+            return;
+        }
+        self.folds.fold_all(self.doc.headings(), self.doc.text());
+        self.folds_changed(cx);
+    }
+
+    fn unfold_all(&mut self, _: &UnfoldAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.folds.unfold_all();
+        self.folds_changed(cx);
+    }
+
     fn show_character_palette(
         &mut self,
         _: &ShowCharacterPalette,
@@ -601,6 +1297,26 @@ impl OrgEditor {
         }
     }
 
+    // ---- mouse --------------------------------------------------------------------------
+
+    /// Range for a click with the given granularity at `offset`.
+    fn granular_range(&self, granularity: Granularity, offset: usize) -> Range<usize> {
+        match granularity {
+            Granularity::Char => offset..offset,
+            Granularity::Word => text::word_at(self.doc.text(), offset),
+            Granularity::Line => {
+                let row = self.row_for_offset(offset);
+                let start = self.line_starts[row];
+                let end = self
+                    .line_starts
+                    .get(row + 1)
+                    .copied()
+                    .unwrap_or(self.doc.text().len());
+                start..end
+            }
+        }
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -608,398 +1324,114 @@ impl OrgEditor {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle);
-        self.is_selecting = true;
         self.goal_x = None;
-        let offset = self.index_for_position(event.position);
+
+        // Clicking the gutter next to a heading toggles its fold.
+        if self.mode == EditorMode::Full
+            && let Some(layout) = self.layout.as_ref()
+            && event.position.x < layout.text_left
+        {
+            let offset = self.index_for_position(event.position, window);
+            let row = self.row_for_offset(offset);
+            if self.heading_level(row).is_some() {
+                let start = self.line_starts[row];
+                if let Some(h) = self
+                    .doc
+                    .headings()
+                    .iter()
+                    .find(|h| h.range.start == start)
+                    .cloned()
+                {
+                    self.toggle_fold_heading(&h, cx);
+                }
+                return;
+            }
+        }
+
+        let offset = self.index_for_position(event.position, window);
+        let granularity = match event.click_count {
+            0 | 1 => Granularity::Char,
+            2 => Granularity::Word,
+            _ => Granularity::Line,
+        };
+        self.is_selecting = true;
         if event.modifiers.shift {
             self.select_to(offset, cx);
+            self.drag = (
+                Granularity::Char,
+                self.selection().anchor..self.selection().anchor,
+            );
         } else {
-            self.move_to(offset, cx);
+            let r = self.granular_range(granularity, offset);
+            self.doc.seal_undo_group();
+            self.set_selection(Selection {
+                anchor: r.start,
+                head: r.end,
+            });
+            self.drag = (granularity, r);
+            self.restart_blink(cx);
+            cx.notify();
         }
-        self.autoscroll = false;
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.is_selecting {
-            self.select_to(self.index_for_position(event.position), cx);
-        }
-    }
-
-    // ---- UTF-16 conversion (platform IME APIs speak UTF-16) -----------------------------
-
-    fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8 = 0;
-        let mut utf16 = 0;
-        for ch in self.doc.text().chars() {
-            if utf16 >= offset {
-                break;
-            }
-            utf16 += ch.len_utf16();
-            utf8 += ch.len_utf8();
-        }
-        utf8
-    }
-
-    fn offset_to_utf16(&self, offset: usize) -> usize {
-        self.doc.text()[..offset].chars().map(char::len_utf16).sum()
-    }
-
-    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
-    }
-
-    fn range_from_utf16(&self, range: &Range<usize>) -> Range<usize> {
-        self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
-    }
-}
-
-impl EntityInputHandler for OrgEditor {
-    fn text_for_range(
+    fn on_mouse_move(
         &mut self,
-        range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let range = self.range_from_utf16(&range_utf16);
-        actual_range.replace(self.range_to_utf16(&range));
-        Some(self.doc.text()[range].to_string())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: self.range_to_utf16(&self.selected_range),
-            reversed: self.selection_reversed,
-        })
-    }
-
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.marked_range.as_ref().map(|r| self.range_to_utf16(r))
-    }
-
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked_range = None;
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-        _: &mut Window,
+        event: &MouseMoveEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-        // Committing or cancelling an IME composition belongs to the composition's undo step.
-        let origin = if new_text.is_empty() && self.marked_range.is_none() {
-            EditOrigin::Delete
+        if !self.is_selecting {
+            return;
+        }
+        let offset = self.index_for_position(event.position, window);
+        let (granularity, origin) = self.drag.clone();
+        let here = self.granular_range(granularity, offset);
+        let sel = if here.start < origin.start {
+            Selection {
+                anchor: origin.end,
+                head: here.start,
+            }
         } else {
-            EditOrigin::Insert
+            Selection {
+                anchor: origin.start,
+                head: here.end.max(origin.end),
+            }
         };
-        self.edit(range, new_text, origin, cx);
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-        new_selected_range_utf16: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
-        self.edit(range.clone(), new_text, EditOrigin::Insert, cx);
-        self.marked_range =
-            (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
-        // The new selection is relative to the inserted (marked) text, in UTF-16 units.
-        self.selected_range = new_selected_range_utf16
-            .map(|sel| {
-                let marked = &new_text;
-                let to_utf8 = |u16_off: usize| {
-                    let mut utf16 = 0;
-                    let mut utf8 = 0;
-                    for ch in marked.chars() {
-                        if utf16 >= u16_off {
-                            break;
-                        }
-                        utf16 += ch.len_utf16();
-                        utf8 += ch.len_utf8();
-                    }
-                    range.start + utf8
-                };
-                to_utf8(sel.start)..to_utf8(sel.end)
-            })
-            .unwrap_or_else(|| {
-                let end = range.start + new_text.len();
-                end..end
-            });
-        self.selection_reversed = false;
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        _element_bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        let layout = self.layout.as_ref()?;
-        let range = self.range_from_utf16(&range_utf16);
-        let row = self.row_for_offset(range.start);
-        let line = &layout.lines[row];
-        let start = self.line_starts[row];
-        let end_col = (range.end.min(self.line_range(row).end)).saturating_sub(start);
-        let top = layout.bounds.top() + layout.line_height * row as f32;
-        Some(Bounds::from_corners(
-            point(
-                layout.bounds.left() + line.x_for_index(range.start - start),
-                top,
-            ),
-            point(
-                layout.bounds.left() + line.x_for_index(end_col),
-                top + layout.line_height,
-            ),
-        ))
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        point: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        let offset = self.index_for_position(point);
-        Some(self.offset_to_utf16(offset))
-    }
-}
-
-// ---- rendering ------------------------------------------------------------------------------
-
-struct EditorElement {
-    editor: Entity<OrgEditor>,
-}
-
-struct PrepaintState {
-    lines: Vec<ShapedLine>,
-    line_height: Pixels,
-    selections: Vec<PaintQuad>,
-    cursor: Option<PaintQuad>,
-}
-
-impl IntoElement for EditorElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl Element for EditorElement {
-    type RequestLayoutState = ();
-    type PrepaintState = PrepaintState;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        let lines = self.editor.read(cx).line_count();
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = (window.line_height() * lines as f32).into();
-        (window.request_layout(style, [], cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) -> PrepaintState {
-        let editor = self.editor.read(cx);
-        let style = window.text_style();
-        let font_size = style.font_size.to_pixels(window.rem_size());
-        let line_height = window.line_height();
-        let base = gpui::TextRun {
-            len: 0,
-            font: style.font(),
-            color: style.color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let styled = spans::style_spans(
-            editor.doc.tree(),
-            editor.doc.text(),
-            editor.marked_range.clone(),
-        );
-
-        let mut lines = Vec::with_capacity(editor.line_count());
-        for row in 0..editor.line_count() {
-            let range = editor.line_range(row);
-            let runs = spans::runs_for_range(&base, &styled, range.clone());
-            let text: SharedString = editor.doc.text()[range].to_string().into();
-            lines.push(
-                window
-                    .text_system()
-                    .shape_line(text, font_size, &runs, None),
-            );
-        }
-
-        let selection_color = rgba(0x3b82f640);
-        let mut selections = Vec::new();
-        let sel = editor.selected_range.clone();
-        if !sel.is_empty() {
-            let (first, last) = (
-                editor.row_for_offset(sel.start),
-                editor.row_for_offset(sel.end),
-            );
-            for (row, line) in lines.iter().enumerate().take(last + 1).skip(first) {
-                let range = editor.line_range(row);
-                let start = sel.start.max(range.start) - range.start;
-                let end = sel.end.min(range.end).max(range.start) - range.start;
-                let x0 = line.x_for_index(start);
-                // Extend the highlight past the line end when the newline is selected.
-                let x1 = line.x_for_index(end) + if row < last { px(6.) } else { px(0.) };
-                let top = bounds.top() + line_height * row as f32;
-                selections.push(fill(
-                    Bounds::from_corners(
-                        point(bounds.left() + x0, top),
-                        point(bounds.left() + x1, top + line_height),
-                    ),
-                    selection_color,
-                ));
-            }
-        }
-
-        let cursor_offset = editor.cursor_offset();
-        let row = editor.row_for_offset(cursor_offset);
-        let col = cursor_offset.min(editor.line_range(row).end) - editor.line_starts[row];
-        let cursor_top = bounds.top() + line_height * row as f32;
-        let cursor = sel.is_empty().then(|| {
-            fill(
-                Bounds::new(
-                    point(bounds.left() + lines[row].x_for_index(col), cursor_top),
-                    size(px(2.), line_height),
-                ),
-                rgb(0x3b82f6),
-            )
-        });
-
-        // Keep the cursor visible after keyboard navigation or edits.
-        if editor.autoscroll {
-            let viewport = editor.scroll_handle.bounds();
-            let mut offset = editor.scroll_handle.offset();
-            let margin = line_height;
-            if cursor_top - margin < viewport.top() {
-                offset.y += viewport.top() - (cursor_top - margin);
-            } else if cursor_top + line_height + margin > viewport.bottom() {
-                offset.y -= cursor_top + line_height + margin - viewport.bottom();
-            }
-            offset.y = offset.y.min(px(0.));
-            if offset != editor.scroll_handle.offset() {
-                editor.scroll_handle.set_offset(offset);
-                window.refresh();
-            }
-        }
-
-        PrepaintState {
-            lines,
-            line_height,
-            selections,
-            cursor,
-        }
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        prepaint: &mut PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let focus_handle = self.editor.read(cx).focus_handle.clone();
-        window.handle_input(
-            &focus_handle,
-            ElementInputHandler::new(bounds, self.editor.clone()),
-            cx,
-        );
-        for quad in prepaint.selections.drain(..) {
-            window.paint_quad(quad);
-        }
-        let line_height = prepaint.line_height;
-        for (row, line) in prepaint.lines.iter().enumerate() {
-            let origin = point(bounds.left(), bounds.top() + line_height * row as f32);
-            line.paint(origin, line_height, window, cx).ok();
-        }
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
-
-        let lines = std::mem::take(&mut prepaint.lines);
-        self.editor.update(cx, |editor, _| {
-            editor.autoscroll = false;
-            editor.layout = Some(Layout {
-                bounds,
-                line_height,
-                lines,
-            });
-        });
+        self.set_selection(sel);
+        self.autoscroll = true;
+        cx.notify();
     }
 }
 
 impl Render for OrgEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("org-editor")
+        let base = div()
+            .id(if self.mode == EditorMode::Full {
+                "org-editor"
+            } else {
+                "org-input"
+            })
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
-            .track_scroll(&self.scroll_handle)
-            .overflow_y_scroll()
-            .size_full()
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_all))
@@ -1010,32 +1442,49 @@ impl Render for OrgEditor {
             .on_action(cx.listener(Self::doc_start))
             .on_action(cx.listener(Self::doc_end))
             .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::shift_enter))
+            .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::tab))
+            .on_action(cx.listener(Self::outdent))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
-            .on_action(cx.listener(Self::outdent))
-            .on_action(cx.listener(Self::toggle_done))
-            .on_action(cx.listener(Self::cycle_todo_backward))
-            .on_action(cx.listener(Self::insert_heading))
-            .on_action(cx.listener(Self::promote_subtree))
-            .on_action(cx.listener(Self::demote_subtree))
-            .on_action(cx.listener(Self::promote_heading))
-            .on_action(cx.listener(Self::demote_heading))
-            .on_action(cx.listener(Self::move_subtree_up))
-            .on_action(cx.listener(Self::move_subtree_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .px_8()
-            .py_6()
-            .child(EditorElement {
-                editor: cx.entity(),
-            })
+            .on_mouse_move(cx.listener(Self::on_mouse_move));
+
+        match self.mode {
+            EditorMode::SingleLine => base
+                .w_full()
+                .overflow_hidden()
+                .child(EditorElement::new(cx.entity())),
+            EditorMode::Full => base
+                .on_action(cx.listener(Self::toggle_done))
+                .on_action(cx.listener(Self::cycle_todo_backward))
+                .on_action(cx.listener(Self::insert_heading))
+                .on_action(cx.listener(Self::promote_subtree))
+                .on_action(cx.listener(Self::demote_subtree))
+                .on_action(cx.listener(Self::promote_heading))
+                .on_action(cx.listener(Self::demote_heading))
+                .on_action(cx.listener(Self::move_subtree_up))
+                .on_action(cx.listener(Self::move_subtree_down))
+                .on_action(cx.listener(Self::toggle_fold))
+                .on_action(cx.listener(Self::fold))
+                .on_action(cx.listener(Self::unfold))
+                .on_action(cx.listener(Self::fold_all))
+                .on_action(cx.listener(Self::unfold_all))
+                .track_scroll(&self.scroll_handle)
+                .overflow_y_scroll()
+                .size_full()
+                .pl_3()
+                .pr_8()
+                .py_6()
+                .child(EditorElement::new(cx.entity())),
+        }
     }
 }
 
@@ -1043,4 +1492,25 @@ impl Focusable for OrgEditor {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
+}
+
+/// Muted color for UI chrome inside the editor (fold arrows, ellipses, placeholders).
+fn muted() -> Hsla {
+    rgb(0x9ca3af).into()
+}
+
+/// Whether `#+STARTUP:` asks for the file to open folded (`overview` / `fold`).
+fn startup_folded(text: &str) -> bool {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim_start();
+            let (key, value) = l.split_once(':')?;
+            key.eq_ignore_ascii_case("#+startup").then_some(value)
+        })
+        .flat_map(str::split_whitespace)
+        .fold(false, |folded, opt| match opt {
+            "overview" | "fold" => true,
+            "showall" | "showeverything" | "nofold" => false,
+            _ => folded,
+        })
 }

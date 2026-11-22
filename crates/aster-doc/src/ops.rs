@@ -41,8 +41,8 @@ fn line_ending(text: &str) -> &'static str {
 /// Cycle the TODO state of the heading at the cursor:
 /// none → first TODO keyword → … → last DONE keyword → none (reverse when `forward` is false).
 pub fn cycle_todo(doc: &Document, sel: Selection, forward: bool) -> Option<OpResult> {
-    let headings = doc.tree().headings();
-    let h = &headings[heading_at(doc, &headings, sel.head)?];
+    let headings = doc.headings();
+    let h = &headings[heading_at(doc, headings, sel.head)?];
     let (todo, done) = doc.tree().todo_keywords();
     let states: Vec<&str> = todo.iter().chain(done).map(String::as_str).collect();
     if states.is_empty() {
@@ -74,13 +74,14 @@ pub fn cycle_todo(doc: &Document, sel: Selection, forward: bool) -> Option<OpRes
 
 /// Headings to act on for promote/demote: just the one at the cursor, or it plus descendants.
 fn affected(doc: &Document, sel: Selection, subtree: bool) -> Option<Vec<HeadingInfo>> {
-    let headings = doc.tree().headings();
-    let i = heading_at(doc, &headings, sel.head)?;
+    let headings = doc.headings();
+    let i = heading_at(doc, headings, sel.head)?;
     let root = headings[i].range.clone();
     Some(if subtree {
         headings
-            .into_iter()
+            .iter()
             .filter(|h| root.start <= h.range.start && h.range.start < root.end)
+            .cloned()
             .collect()
     } else {
         vec![headings[i].clone()]
@@ -110,8 +111,8 @@ pub fn demote(doc: &Document, sel: Selection, subtree: bool) -> Option<OpResult>
 
 /// Swap the subtree at the cursor with its previous (`up`) or next sibling.
 pub fn move_subtree(doc: &Document, sel: Selection, up: bool) -> Option<OpResult> {
-    let headings = doc.tree().headings();
-    let h = &headings[heading_at(doc, &headings, sel.head)?];
+    let headings = doc.headings();
+    let h = &headings[heading_at(doc, headings, sel.head)?];
     let sibling = if up {
         headings
             .iter()
@@ -165,8 +166,8 @@ fn swap_chunks(text: &str, a: Range<usize>, b: Range<usize>) -> (String, String)
 pub fn insert_heading(doc: &Document, sel: Selection) -> Option<OpResult> {
     let text = doc.text();
     let eol = line_ending(text);
-    let headings = doc.tree().headings();
-    let (at, insert, cursor_offset) = match heading_at(doc, &headings, sel.head) {
+    let headings = doc.headings();
+    let (at, insert, cursor_offset) = match heading_at(doc, headings, sel.head) {
         Some(i) => {
             let h = &headings[i];
             let stars = "*".repeat(h.level);

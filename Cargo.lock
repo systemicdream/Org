@@ -179,6 +179,7 @@ name = "aster-doc"
 version = "0.1.0"
 dependencies = [
  "aster-org",
+ "unicode-segmentation",
 ]
 
 [[package]]

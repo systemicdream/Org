@@ -4,14 +4,17 @@
 //! undoable, the tree is always in sync with the text, and structural commands (see [`ops`])
 //! are testable without any UI.
 
+pub mod folds;
 mod history;
 pub mod ops;
+pub mod search;
+pub mod text;
 mod transaction;
 
 use std::ops::Range;
 use std::time::Instant;
 
-use aster_org::OrgTree;
+use aster_org::{HeadingInfo, OrgTree};
 use history::History;
 
 pub use history::EditOrigin;
@@ -52,18 +55,23 @@ impl Selection {
 pub struct Document {
     text: String,
     tree: OrgTree,
+    headings: Vec<HeadingInfo>,
     history: History,
     version: u64,
+    last_change: Option<Transaction>,
 }
 
 impl Document {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
+        let tree = OrgTree::parse(&text);
         Self {
-            tree: OrgTree::parse(&text),
+            headings: tree.headings(),
+            tree,
             text,
             history: History::default(),
             version: 0,
+            last_change: None,
         }
     }
 
@@ -73,6 +81,17 @@ impl Document {
 
     pub fn tree(&self) -> &OrgTree {
         &self.tree
+    }
+
+    /// All headings in document order (cached per version).
+    pub fn headings(&self) -> &[HeadingInfo] {
+        &self.headings
+    }
+
+    /// The transaction most recently applied to the text (including by undo/redo), for
+    /// remapping view state such as folds.
+    pub fn last_change(&self) -> Option<&Transaction> {
+        self.last_change.as_ref()
     }
 
     /// Increments on every change (including undo/redo).
@@ -104,7 +123,7 @@ impl Document {
             return;
         }
         let inverse = tx.apply(&mut self.text);
-        self.reparse();
+        self.reparse(tx.clone());
         self.history.record(tx, inverse, before, after, origin, at);
     }
 
@@ -118,7 +137,7 @@ impl Document {
         let entry = self.history.pop_undo()?;
         let (tx, sel) = (entry.inverse.clone(), entry.before);
         tx.apply(&mut self.text);
-        self.reparse();
+        self.reparse(tx);
         Some(sel)
     }
 
@@ -127,7 +146,7 @@ impl Document {
         let entry = self.history.pop_redo()?;
         let (tx, sel) = (entry.forward.clone(), entry.after);
         tx.apply(&mut self.text);
-        self.reparse();
+        self.reparse(tx);
         Some(sel)
     }
 
@@ -139,10 +158,12 @@ impl Document {
         self.history.can_redo()
     }
 
-    fn reparse(&mut self) {
+    fn reparse(&mut self, change: Transaction) {
         // Full reparse; see docs/decisions/0001-org-parser.md.
         self.tree = OrgTree::parse(&self.text);
+        self.headings = self.tree.headings();
         self.version += 1;
+        self.last_change = Some(change);
     }
 }
 

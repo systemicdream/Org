@@ -2,12 +2,13 @@
 
 use std::ops::Range;
 
-use aster_org::OrgTree;
+use aster_org::HeadingInfo;
 use gpui::{FontWeight, Hsla, TextRun, UnderlineStyle, px, rgb};
 
 #[derive(Clone, Copy, Default)]
 pub struct SpanStyle {
     pub color: Option<Hsla>,
+    pub background: Option<Hsla>,
     pub bold: bool,
     pub underline: bool,
 }
@@ -21,9 +22,9 @@ fn color(hex: u32) -> Option<Hsla> {
 const HEADING_COLORS: [u32; 4] = [0x1d4ed8, 0x7c3aed, 0x0f766e, 0xb45309];
 
 /// Compute styled ranges for the whole document. Later spans override earlier ones.
-pub fn style_spans(tree: &OrgTree, text: &str, marked: Option<Range<usize>>) -> Spans {
+pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
     let mut spans = Spans::new();
-    for h in tree.headings() {
+    for h in headings {
         let line_end = text[h.range.start..]
             .find(['\r', '\n'])
             .map_or(text.len(), |i| h.range.start + i);
@@ -31,7 +32,7 @@ pub fn style_spans(tree: &OrgTree, text: &str, marked: Option<Range<usize>>) -> 
         let heading = SpanStyle {
             color: color(HEADING_COLORS[(h.level - 1) % HEADING_COLORS.len()]),
             bold: true,
-            underline: false,
+            ..Default::default()
         };
         spans.push((h.range.start..line_end, heading));
 
@@ -53,7 +54,7 @@ pub fn style_spans(tree: &OrgTree, text: &str, marked: Option<Range<usize>>) -> 
                 SpanStyle {
                     color: color(c),
                     bold: true,
-                    underline: false,
+                    ..Default::default()
                 },
             ));
         }
@@ -66,7 +67,7 @@ pub fn style_spans(tree: &OrgTree, text: &str, marked: Option<Range<usize>>) -> 
                 SpanStyle {
                     color: color(0xea580c),
                     bold: true,
-                    underline: false,
+                    ..Default::default()
                 },
             ));
         }
@@ -80,21 +81,11 @@ pub fn style_spans(tree: &OrgTree, text: &str, marked: Option<Range<usize>>) -> 
                     start..h.range.start + trimmed.len(),
                     SpanStyle {
                         color: color(0x6b7280),
-                        bold: false,
-                        underline: false,
+                        ..Default::default()
                     },
                 ));
             }
         }
-    }
-    if let Some(marked) = marked {
-        spans.push((
-            marked,
-            SpanStyle {
-                underline: true,
-                ..Default::default()
-            },
-        ));
     }
     spans
 }
@@ -123,6 +114,9 @@ pub fn runs_for_range(base: &TextRun, spans: &Spans, range: Range<usize>) -> Vec
             if r.start <= a && b <= r.end {
                 if let Some(c) = style.color {
                     run.color = c;
+                }
+                if let Some(bg) = style.background {
+                    run.background_color = Some(bg);
                 }
                 if style.bold {
                     run.font.weight = FontWeight::BOLD;
