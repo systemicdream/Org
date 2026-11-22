@@ -537,6 +537,72 @@ impl OrgEditor {
     }
 
     /// The selected text (empty when nothing is selected).
+    /// Move the cursor to `offset` (opening folds/drawers around it) and scroll it into view.
+    pub fn jump_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.select_range(offset..offset, cx);
+    }
+
+    /// Select `range` (e.g. a search match), opening folds/drawers around it.
+    pub fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let len = self.doc.text().len();
+        let range = range.start.min(len)..range.end.min(len);
+        let folded = self
+            .folds
+            .reveal(range.start, self.doc.headings(), self.doc.text());
+        if folded | self.reveal_drawer(range.start) {
+            self.recompute_lines();
+        }
+        self.doc.seal_undo_group();
+        self.set_selection(Selection {
+            anchor: range.start,
+            head: range.end,
+        });
+        self.autoscroll = true;
+        self.restart_blink(cx);
+        cx.notify();
+    }
+
+    /// Replace the text with `new_text` (e.g. the file changed on disk) as one undoable edit
+    /// covering only the part that differs, so the cursor and folds elsewhere stay put.
+    pub fn reload_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
+        let old = self.doc.text();
+        if old == new_text {
+            return;
+        }
+        let prefix = old
+            .bytes()
+            .zip(new_text.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let max_suffix = old.len().min(new_text.len()) - prefix;
+        let suffix = old
+            .bytes()
+            .rev()
+            .zip(new_text.bytes().rev())
+            .take(max_suffix)
+            .take_while(|(a, b)| a == b)
+            .count();
+        // Keep the edit on character boundaries.
+        let mut start = prefix;
+        while !old.is_char_boundary(start) || !new_text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut old_end = old.len() - suffix;
+        let mut new_end = new_text.len() - suffix;
+        while !old.is_char_boundary(old_end) || !new_text.is_char_boundary(new_end) {
+            old_end += 1;
+            new_end += 1;
+        }
+        let tx = aster_doc::Transaction::replace(start..old_end, &new_text[start..new_end]);
+        let before = self.selection();
+        let after = before.map(&tx);
+        self.doc.seal_undo_group();
+        self.doc.apply(tx, before, after, EditOrigin::Other);
+        self.doc.seal_undo_group();
+        self.set_selection(after);
+        self.after_change(cx);
+    }
+
     pub fn selected_text(&self) -> &str {
         &self.doc.text()[self.selected_range.clone()]
     }
@@ -1985,7 +2051,8 @@ impl OrgEditor {
                 }
                 self.move_to(at, cx);
             }
-            None if target.starts_with('*') || target.starts_with("id:") => {}
+            // A heading that isn't in this file: nothing to do. An ID may be in another file.
+            None if target.starts_with('*') => {}
             None => cx.emit(EditorEvent::OpenLink(target.to_string())),
         }
     }
