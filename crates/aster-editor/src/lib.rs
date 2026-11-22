@@ -86,6 +86,10 @@ actions!(
         MoveSubtreeDown,
         Outdent,
         OpenHeadingMenu,
+        /// Move the heading at the cursor under another heading or file (handled by the app).
+        Refile,
+        /// Move the heading at the cursor to the file's archive (handled by the app).
+        ArchiveSubtree,
         // Folding
         ToggleFold,
         Fold,
@@ -182,6 +186,8 @@ pub fn commands() -> Vec<(&'static str, Box<dyn gpui::Action>)> {
         ("Cycle TODO state backwards", Box::new(CycleTodoBackward)),
         ("New heading below", Box::new(InsertHeading)),
         ("Heading menu…", Box::new(OpenHeadingMenu)),
+        ("Refile heading…", Box::new(Refile)),
+        ("Archive heading", Box::new(ArchiveSubtree)),
         ("Move heading up", Box::new(MoveSubtreeUp)),
         ("Move heading down", Box::new(MoveSubtreeDown)),
         ("Indent heading (with children)", Box::new(DemoteSubtree)),
@@ -545,6 +551,21 @@ impl OrgEditor {
     }
 
     /// The selected text (empty when nothing is selected).
+    /// The document being edited (read-only).
+    pub fn document(&self) -> &Document {
+        &self.doc
+    }
+
+    /// Start offset of the heading whose section contains the cursor.
+    pub fn heading_start_at_cursor(&self) -> Option<usize> {
+        self.heading_at_cursor().map(|h| h.range.start)
+    }
+
+    /// Apply a document operation computed elsewhere (e.g. refile) as one undo step.
+    pub fn apply_result(&mut self, result: ops::OpResult, cx: &mut Context<Self>) {
+        self.apply_op(Some(result), cx);
+    }
+
     /// Move the cursor to `offset` (opening folds/drawers around it) and scroll it into view.
     pub fn jump_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.select_range(offset..offset, cx);

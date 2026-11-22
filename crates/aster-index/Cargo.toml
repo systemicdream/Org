@@ -7,3 +7,5 @@ license.workspace = true
 
 [dependencies]
 aster-org.workspace = true
+aster-doc.workspace = true
+chrono.workspace = true

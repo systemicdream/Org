@@ -325,6 +325,23 @@ workspace (Phase 5 index), keyboard-driven drag, hover handles/"⋯" buttons, mu
 Deferred: backlinks panel (with org-roam, later), creating/renaming/deleting files from the
 sidebar, multiple windows, a persistent on-disk index (ADR 0004).
 
+
+### Phase 6 task list
+
+- [x] Timestamps with times, repeaters and warning periods (`aster-doc::dates`); index records
+      planning dates, plain timestamps, priority and properties per heading
+- [x] `aster-agenda`: day/week agenda (overdue tasks, upcoming deadlines, repeaters), TODO list,
+      Org match queries with tag inheritance
+- [x] Agenda pane with Day/Week/To-do/Search, Org-style keys, mark done from the agenda
+- [x] Capture: task/note to `inbox.org`, journal entry under today in `journal.org`
+- [x] Refile to any heading or file in the folder; archive to `<file>_archive`
+- [x] Toasts for confirmations and errors
+- [x] Hands-on test
+
+Deferred: a system-wide capture hotkey (GPUI has no global shortcuts; needs a small platform
+helper), configurable capture templates and targets, clocking/effort sums in the agenda, habits,
+`CLOSED:` stamping when marking done, block agenda/custom views.
+
 ---
 
 ## 10. Risks

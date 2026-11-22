@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use aster_doc::dates::Timestamp;
 use aster_org::OrgTree;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,8 +20,89 @@ pub struct HeadingEntry {
     pub tags: Vec<String>,
     /// The `:ID:` property, if any.
     pub id: Option<String>,
+    pub priority: Option<char>,
+    /// Properties from the heading's property drawer, in order.
+    pub properties: Vec<(String, String)>,
+    pub scheduled: Option<Timestamp>,
+    pub deadline: Option<Timestamp>,
+    pub closed: Option<Timestamp>,
+    /// Other active timestamps in the title or own section (not planning lines).
+    pub timestamps: Vec<Timestamp>,
     /// Byte offset of the heading line.
     pub offset: usize,
+}
+
+impl HeadingEntry {
+    pub fn property(&self, key: &str) -> Option<&str> {
+        self.properties
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+#[derive(Default)]
+struct SectionInfo {
+    properties: Vec<(String, String)>,
+    scheduled: Option<Timestamp>,
+    deadline: Option<Timestamp>,
+    closed: Option<Timestamp>,
+    timestamps: Vec<Timestamp>,
+}
+
+/// Every active timestamp (`<…>`) in `text`.
+fn active_timestamps(text: &str) -> Vec<Timestamp> {
+    text.match_indices('<')
+        .filter_map(|(i, _)| {
+            let end = text[i..].find('>')? + i + 1;
+            Timestamp::parse(&text[i..end]).filter(|t| t.active)
+        })
+        .collect()
+}
+
+/// Planning, properties and plain timestamps of a heading's own section (after its line).
+fn section_info(section: &str) -> SectionInfo {
+    let mut info = SectionInfo::default();
+    let mut lines = section.lines().peekable();
+    // Planning line directly under the heading.
+    if let Some(first) = lines.peek()
+        && ["SCHEDULED:", "DEADLINE:", "CLOSED:"]
+            .iter()
+            .any(|k| first.trim_start().starts_with(k))
+    {
+        let line = lines.next().unwrap_or_default();
+        for (kw, slot) in [
+            ("SCHEDULED:", &mut info.scheduled),
+            ("DEADLINE:", &mut info.deadline),
+            ("CLOSED:", &mut info.closed),
+        ] {
+            if let Some(at) = line.find(kw) {
+                let rest = line[at + kw.len()..].trim_start();
+                *slot = Timestamp::parse(rest);
+            }
+        }
+    }
+    let mut in_props = false;
+    for line in lines {
+        let t = line.trim();
+        if t.eq_ignore_ascii_case(":properties:") {
+            in_props = true;
+            continue;
+        }
+        if in_props {
+            if t.eq_ignore_ascii_case(":end:") {
+                in_props = false;
+            } else if let Some(rest) = t.strip_prefix(':')
+                && let Some((k, v)) = rest.split_once(':')
+            {
+                info.properties
+                    .push((k.trim().to_string(), v.trim().to_string()));
+            }
+            continue;
+        }
+        info.timestamps.extend(active_timestamps(line));
+    }
+    info
 }
 
 #[derive(Debug, Clone)]
@@ -123,28 +205,41 @@ fn parse_keyword<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 /// Parse a file's text into its index entry.
 pub fn index_text(path: &Path, rel: String, text: String) -> FileEntry {
     let tree = OrgTree::parse(&text);
-    let headings = tree
-        .headings()
+    let raw = tree.headings();
+    let starts: Vec<usize> = raw.iter().map(|h| h.range.start).collect();
+    let headings = raw
         .into_iter()
-        .map(|h| {
-            // The :ID: property lives in the heading's own section, before any child heading.
-            let section_end = text[h.line_end..h.range.end]
-                .find("\n*")
-                .map_or(h.range.end, |i| h.line_end + i + 1);
-            let id = text[h.line_end..section_end].lines().find_map(|l| {
-                let l = l.trim();
-                l.get(..4)
-                    .filter(|p| p.eq_ignore_ascii_case(":id:"))
-                    .map(|_| l[4..].trim().to_string())
-                    .filter(|v| !v.is_empty())
-            });
+        .enumerate()
+        .map(|(i, h)| {
+            // A heading's own section runs to the next heading of any level.
+            let section_end = starts
+                .get(i + 1)
+                .copied()
+                .unwrap_or(text.len())
+                .min(h.range.end);
+            let body_start = (h.line_end + 1).min(section_end);
+            let section = &text[body_start..section_end];
+            let info = section_info(section);
+            // Dates in the title count too (e.g. "* Meeting <2026-11-23 Mon>").
+            let mut timestamps = active_timestamps(&text[h.range.start..h.line_end]);
+            timestamps.extend(info.timestamps);
             HeadingEntry {
                 title: h.title,
                 level: h.level,
                 todo: h.todo,
                 done: h.done,
+                priority: h.priority.and_then(|p| p.chars().next()),
                 tags: h.tags,
-                id,
+                id: info
+                    .properties
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                    .map(|(_, v)| v.clone()),
+                properties: info.properties,
+                scheduled: info.scheduled,
+                deadline: info.deadline,
+                closed: info.closed,
+                timestamps,
                 offset: h.range.start,
             }
         })
@@ -437,5 +532,19 @@ mod tests {
         assert_eq!(f.headings[0].tags, ["work"]);
         assert_eq!(f.headings[1].id.as_deref(), Some("child-2"));
         assert_eq!(f.display_name(), "My Notes");
+    }
+
+    #[test]
+    fn planning_timestamps_properties() {
+        let text = "* TODO [#A] Pay rent <2026-12-01 Tue>\nDEADLINE: <2026-12-01 Tue -5d> SCHEDULED: <2026-11-28 Sat +1m>\n:PROPERTIES:\n:EFFORT: 0:10\n:END:\nCall at <2026-11-30 Mon 09:00>.\n** Child <2027-01-01 Fri>\n";
+        let f = index_text(Path::new("/x/n.org"), "n.org".into(), text.into());
+        let h = &f.headings[0];
+        assert_eq!(h.priority, Some('A'));
+        assert_eq!(h.deadline.as_ref().unwrap().warning_days, Some(5));
+        assert!(h.scheduled.as_ref().unwrap().repeater.is_some());
+        assert_eq!(h.property("effort"), Some("0:10"));
+        // Title timestamp and body timestamp; the child's date belongs to the child.
+        assert_eq!(h.timestamps.len(), 2);
+        assert_eq!(f.headings[1].timestamps.len(), 1);
     }
 }

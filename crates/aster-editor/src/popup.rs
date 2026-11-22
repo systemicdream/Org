@@ -31,6 +31,8 @@ pub(crate) enum HeadingOp {
     Outdent,
     NewBelow,
     ToggleFold,
+    Refile,
+    Archive,
 }
 
 #[derive(Clone, Debug)]
@@ -329,6 +331,8 @@ impl OrgEditor {
             MenuItem::new("Indent", Command::Heading(h, HeadingOp::Indent)).hint("Tab"),
             MenuItem::new("Outdent", Command::Heading(h, HeadingOp::Outdent)).hint("⇧Tab"),
             MenuItem::new("Fold / unfold", Command::Heading(h, HeadingOp::ToggleFold)),
+            MenuItem::new("Refile…", Command::Heading(h, HeadingOp::Refile)),
+            MenuItem::new("Archive", Command::Heading(h, HeadingOp::Archive)),
         ];
         self.open_menu(anchor, None, items, cx);
     }
@@ -593,6 +597,16 @@ impl OrgEditor {
                         if let Some(heading) = meta::heading(&self.doc, h).cloned() {
                             self.toggle_fold_heading(&heading, cx);
                         }
+                        return;
+                    }
+                    // Handled by the app: put the cursor on the heading and send the action up.
+                    HeadingOp::Refile | HeadingOp::Archive => {
+                        self.set_selection(at);
+                        let action: Box<dyn gpui::Action> = match op {
+                            HeadingOp::Refile => Box::new(crate::Refile),
+                            _ => Box::new(crate::ArchiveSubtree),
+                        };
+                        window.dispatch_action(action, cx);
                         return;
                     }
                 };

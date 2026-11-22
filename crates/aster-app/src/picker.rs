@@ -19,6 +19,9 @@ pub enum PickTarget {
     File(PathBuf),
     /// Open a file and select a range in it.
     Location(PathBuf, Range<usize>),
+    /// Refile the pending heading into this file, under the heading at this offset (or at the
+    /// top level).
+    Refile(PathBuf, Option<usize>),
 }
 
 #[derive(Clone, Default)]

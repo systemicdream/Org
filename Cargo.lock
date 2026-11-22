@@ -175,12 +175,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-agenda"
+version = "0.1.0"
+dependencies = [
+ "aster-index",
+ "chrono",
+]
+
+[[package]]
 name = "aster-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aster-agenda",
+ "aster-doc",
  "aster-editor",
  "aster-index",
+ "chrono",
  "dirs 7.0.0",
  "futures",
  "gpui",
@@ -215,7 +226,9 @@ dependencies = [
 name = "aster-index"
 version = "0.1.0"
 dependencies = [
+ "aster-doc",
  "aster-org",
+ "chrono",
 ]
 
 [[package]]

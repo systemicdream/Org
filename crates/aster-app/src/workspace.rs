@@ -14,10 +14,14 @@ use gpui::{
     Task, Window, div, prelude::*, px, rgb,
 };
 
+use crate::agenda_view::{AgendaEvent, AgendaView, Mode as AgendaMode};
+use crate::capture::{CaptureDialog, CaptureEvent, Template};
 use crate::picker::{PickTarget, Picker, PickerEvent, PickerItem};
 use crate::session::Session;
 use crate::watch::{self, FolderWatcher};
 use crate::*;
+use aster_doc::ops::OpResult;
+use aster_doc::{Document, Selection, Transaction, dates, meta};
 
 pub const SAMPLE: &str = include_str!("../assets/welcome.org");
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1000);
@@ -43,6 +47,15 @@ pub struct Workspace {
     pub(crate) expanded: BTreeSet<String>,
     sidebar_open: bool,
     _watcher: Option<Task<()>>,
+
+    // ---- views and dialogs ----
+    agenda: Option<(Entity<AgendaView>, Subscription)>,
+    show_agenda: bool,
+    capture: Option<(Entity<CaptureDialog>, Subscription)>,
+    /// The heading waiting for a refile target: (file, heading start).
+    refile_source: Option<(PathBuf, usize)>,
+    toast: Option<(SharedString, bool)>,
+    toast_task: Option<Task<()>>,
 }
 
 impl Workspace {
@@ -70,6 +83,12 @@ impl Workspace {
             expanded: BTreeSet::new(),
             sidebar_open: true,
             _watcher: None,
+            agenda: None,
+            show_agenda: false,
+            capture: None,
+            refile_source: None,
+            toast: None,
+            toast_task: None,
         };
         window.set_window_title(&ws.title());
         ws.sync_base_dir(cx);
@@ -143,6 +162,462 @@ impl Workspace {
         .save();
     }
 
+    // ---- messages -------------------------------------------------------------------------
+
+    /// Show a short message at the bottom of the window (errors stay a little longer).
+    pub(crate) fn toast(
+        &mut self,
+        message: impl Into<SharedString>,
+        error: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.toast = Some((message.into(), error));
+        self.toast_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(if error { 6000 } else { 3000 }))
+                .await;
+            this.update(cx, |ws, cx| {
+                ws.toast = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Apply a document operation to `path`: through the editor when it's the open file (so it
+    /// can be undone), otherwise by rewriting the file. Returns whether anything changed.
+    fn edit_file(
+        &mut self,
+        path: &Path,
+        op: impl FnOnce(&Document) -> Option<OpResult>,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<bool> {
+        if self.path.as_deref() == Some(path) {
+            let Some(result) = op(self.editor.read(cx).document()) else {
+                return Ok(false);
+            };
+            self.editor.update(cx, |e, cx| e.apply_result(result, cx));
+            let text = self.editor.read(cx).text().to_string();
+            self.index.update(cx, |index, cx| {
+                if index.covers(path) && index.upsert_text(path, text) {
+                    cx.notify();
+                }
+            });
+            return Ok(true);
+        }
+        let text = if path.exists() {
+            read_org(path)?
+        } else {
+            String::new()
+        };
+        let doc = Document::new(text);
+        let Some(result) = op(&doc) else {
+            return Ok(false);
+        };
+        let mut new_text = doc.text().to_string();
+        result.tx.apply(&mut new_text);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        write_atomic(path, &new_text)?;
+        self.index.update(cx, |index, cx| {
+            if index.covers(path) && index.upsert_text(path, new_text) {
+                cx.notify();
+            }
+        });
+        Ok(true)
+    }
+
+    // ---- agenda ---------------------------------------------------------------------------
+
+    pub(crate) fn show_agenda_mode(
+        &mut self,
+        mode: AgendaMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.root.is_none() {
+            self.toast("Open a notes folder to see its agenda", false, cx);
+            return;
+        }
+        let view = match &self.agenda {
+            Some((view, _)) => view.clone(),
+            None => {
+                let index = self.index.clone();
+                let view = cx.new(|cx| AgendaView::new(index, mode, window, cx));
+                let sub =
+                    cx.subscribe_in(&view, window, |this, _, event: &AgendaEvent, window, cx| {
+                        match event {
+                            AgendaEvent::Open(path, offset) => {
+                                let (path, offset) = (path.clone(), *offset);
+                                this.hide_agenda(window, cx);
+                                this.open_at(path, offset..offset, window, cx);
+                            }
+                            AgendaEvent::ToggleDone(path, offset) => {
+                                let (path, offset) = (path.clone(), *offset);
+                                this.toggle_done_at(&path, offset, cx);
+                            }
+                            AgendaEvent::Close => this.hide_agenda(window, cx),
+                        }
+                    });
+                self.agenda = Some((view.clone(), sub));
+                view
+            }
+        };
+        self.show_agenda = true;
+        view.update(cx, |v, cx| v.set_mode(mode, window, cx));
+        cx.notify();
+    }
+
+    fn hide_agenda(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_agenda = false;
+        window.focus(&self.editor.focus_handle(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn show_agenda(
+        &mut self,
+        _: &ShowAgenda,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.show_agenda {
+            self.hide_agenda(window, cx);
+        } else {
+            self.show_agenda_mode(AgendaMode::Day, window, cx);
+        }
+    }
+
+    pub(crate) fn show_todo_list(
+        &mut self,
+        _: &ShowTodoList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_agenda_mode(AgendaMode::Todo, window, cx);
+    }
+
+    /// Mark the heading at `offset` in `path` done (or back to its first open state).
+    fn toggle_done_at(&mut self, path: &Path, offset: usize, cx: &mut Context<Self>) {
+        let is_task = self
+            .index
+            .read(cx)
+            .file(path)
+            .and_then(|f| f.headings.iter().find(|h| h.offset == offset))
+            .is_some_and(|h| h.todo.is_some());
+        if !is_task {
+            self.toast(
+                "That's an event, not a task — open it to add a TODO state",
+                false,
+                cx,
+            );
+            return;
+        }
+        let result = self.edit_file(
+            path,
+            |doc| {
+                let h = meta::heading(doc, offset)?;
+                let states = meta::todo_states(doc);
+                let next = if h.done {
+                    states.iter().find(|(_, done)| !done)
+                } else {
+                    states.iter().find(|(_, done)| *done)
+                }?;
+                meta::set_todo(doc, offset, Some(&next.0), Selection::default())
+            },
+            cx,
+        );
+        if let Err(err) = result {
+            self.toast(format!("Couldn't update the task: {err:#}"), true, cx);
+        }
+    }
+
+    // ---- capture, refile, archive ---------------------------------------------------------
+
+    pub(crate) fn capture(&mut self, _: &Capture, window: &mut Window, cx: &mut Context<Self>) {
+        if self.root.is_none() {
+            self.toast(
+                "Open a notes folder first: captures go to its inbox.org",
+                false,
+                cx,
+            );
+            return;
+        }
+        let dialog = cx.new(|cx| CaptureDialog::new(window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, event: &CaptureEvent, window, cx| match event {
+                CaptureEvent::Capture(template, text) => {
+                    let (template, text) = (*template, text.clone());
+                    this.capture = None;
+                    window.focus(&this.editor.focus_handle(cx));
+                    this.save_capture(template, &text, cx);
+                }
+                CaptureEvent::Dismissed => {
+                    this.capture = None;
+                    window.focus(&this.editor.focus_handle(cx));
+                    cx.notify();
+                }
+            },
+        );
+        self.capture = Some((dialog, sub));
+        cx.notify();
+    }
+
+    fn save_capture(&mut self, template: Template, text: &str, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let stamp = dates::inactive_now();
+        let (file, result) = match template {
+            Template::Task | Template::Note => {
+                let path = root.join("inbox.org");
+                let keyword = if template == Template::Task {
+                    "TODO "
+                } else {
+                    ""
+                };
+                let chunk = format!("* {keyword}{text}\n{stamp}\n");
+                let r = self.edit_file(&path, |doc| meta::insert_subtree(doc, None, &chunk), cx);
+                ("inbox.org", r)
+            }
+            Template::Journal => {
+                let path = root.join("journal.org");
+                let today = dates::today();
+                let day_title = dates::format_date(today);
+                let time = chrono::Local::now().format("%H:%M").to_string();
+                let r = self.edit_file(
+                    &path,
+                    |doc| {
+                        let day = doc
+                            .headings()
+                            .iter()
+                            .find(|h| h.level == 1 && h.title == day_title)
+                            .map(|h| h.range.start);
+                        match day {
+                            Some(d) => {
+                                meta::insert_subtree(doc, Some(d), &format!("** {time} {text}\n"))
+                            }
+                            None => meta::insert_subtree(
+                                doc,
+                                None,
+                                &format!("* {day_title}\n** {time} {text}\n"),
+                            ),
+                        }
+                    },
+                    cx,
+                );
+                ("journal.org", r)
+            }
+        };
+        match result {
+            Ok(_) => self.toast(format!("Captured to {file}"), false, cx),
+            Err(err) => self.toast(format!("Capture failed: {err:#}"), true, cx),
+        }
+    }
+
+    pub(crate) fn refile(
+        &mut self,
+        _: &aster_editor::Refile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(src) = self.path.clone() else {
+            self.toast("Save this file before refiling from it", false, cx);
+            return;
+        };
+        if self.root.is_none() {
+            self.toast("Open a notes folder to refile between files", false, cx);
+            return;
+        }
+        let Some(h) = self.editor.read(cx).heading_start_at_cursor() else {
+            self.toast("Put the cursor in a heading to refile it", false, cx);
+            return;
+        };
+        let doc = self.editor.read(cx).document();
+        let own = meta::heading(doc, h)
+            .map(|x| x.range.clone())
+            .unwrap_or(h..h);
+        let title = meta::heading(doc, h)
+            .map(|x| x.title.clone())
+            .unwrap_or_default();
+        self.refile_source = Some((src.clone(), h));
+        let index = self.index.clone();
+        let provider = Box::new(move |q: &str, cx: &gpui::App| {
+            let index = index.read(cx);
+            let mut out: Vec<(usize, PickerItem, PickTarget)> = Vec::new();
+            for f in index.files().filter(|f| !f.conflict) {
+                if let Some(score) = fuzzy_score(&format!("{} top level", f.rel), q) {
+                    out.push((
+                        score,
+                        PickerItem {
+                            label: format!("{} (top level)", f.display_name()).into(),
+                            detail: Some(f.rel.clone().into()),
+                            ..Default::default()
+                        },
+                        PickTarget::Refile(f.path.clone(), None),
+                    ));
+                }
+                let mut stack: Vec<(usize, String)> = Vec::new();
+                for hd in &f.headings {
+                    while stack.last().is_some_and(|(l, _)| *l >= hd.level) {
+                        stack.pop();
+                    }
+                    stack.push((hd.level, hd.title.clone()));
+                    // Not into itself or its own children.
+                    if f.path == src && hd.offset >= own.start && hd.offset < own.end {
+                        continue;
+                    }
+                    let outline = stack
+                        .iter()
+                        .map(|(_, t)| t.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" › ");
+                    let Some(score) = fuzzy_score(&format!("{outline} {}", f.rel), q) else {
+                        continue;
+                    };
+                    out.push((
+                        score,
+                        PickerItem {
+                            label: outline.into(),
+                            detail: Some(f.rel.clone().into()),
+                            ..Default::default()
+                        },
+                        PickTarget::Refile(f.path.clone(), Some(hd.offset)),
+                    ));
+                }
+            }
+            out.sort_by_key(|(s, ..)| *s);
+            out.into_iter().map(|(_, i, t)| (i, t)).collect()
+        });
+        self.show_picker(&format!("Refile “{title}” to…"), "", provider, window, cx);
+    }
+
+    fn do_refile(&mut self, target: PathBuf, parent: Option<usize>, cx: &mut Context<Self>) {
+        let Some((src, h)) = self.refile_source.take() else {
+            return;
+        };
+        if self.path.as_ref() != Some(&src) {
+            return;
+        }
+        let target_name = target
+            .file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        if target == src {
+            let doc = self.editor.read(cx).document();
+            let level = parent
+                .and_then(|p| meta::heading(doc, p))
+                .map_or(1, |p| p.level + 1);
+            let before = parent.and_then(|p| {
+                let end = meta::heading(doc, p)?.range.end;
+                doc.headings()
+                    .iter()
+                    .find(|x| x.range.start == end)
+                    .map(|x| x.range.start)
+            });
+            let r = meta::move_subtree_to(doc, h, meta::DropTarget { before, level });
+            match r {
+                Some(r) => {
+                    self.editor.update(cx, |e, cx| e.apply_result(r, cx));
+                    self.toast(format!("Moved within {target_name}"), false, cx);
+                }
+                None => self.toast("It's already there", false, cx),
+            }
+            return;
+        }
+        // Into another file: add it there first, then remove it here (undoable).
+        let level = parent
+            .and_then(|p| {
+                self.index
+                    .read(cx)
+                    .file(&target)?
+                    .headings
+                    .iter()
+                    .find(|x| x.offset == p)
+                    .map(|x| x.level + 1)
+            })
+            .unwrap_or(1);
+        let Some(chunk) = meta::subtree_text(self.editor.read(cx).document(), h, level) else {
+            return;
+        };
+        match self.edit_file(&target, |doc| meta::insert_subtree(doc, parent, &chunk), cx) {
+            Ok(true) => {
+                if let Some(r) = meta::remove_subtree(self.editor.read(cx).document(), h) {
+                    self.editor.update(cx, |e, cx| e.apply_result(r, cx));
+                }
+                self.toast(format!("Refiled to {target_name}"), false, cx);
+            }
+            Ok(false) => self.toast("Couldn't find the target heading", true, cx),
+            Err(err) => self.toast(format!("Refile failed: {err:#}"), true, cx),
+        }
+    }
+
+    pub(crate) fn archive(
+        &mut self,
+        _: &aster_editor::ArchiveSubtree,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(src) = self.path.clone() else {
+            self.toast("Save this file before archiving from it", false, cx);
+            return;
+        };
+        let Some(h) = self.editor.read(cx).heading_start_at_cursor() else {
+            self.toast("Put the cursor in a heading to archive it", false, cx);
+            return;
+        };
+        let doc = self.editor.read(cx).document();
+        let Some(chunk) = meta::subtree_text(doc, h, 1) else {
+            return;
+        };
+        let mut props: Vec<(&str, String)> = vec![
+            ("ARCHIVE_TIME", dates::inactive_now()),
+            ("ARCHIVE_FILE", src.display().to_string()),
+        ];
+        let olpath = meta::outline_path(doc, h).join("/");
+        if !olpath.is_empty() {
+            props.push(("ARCHIVE_OLPATH", olpath));
+        }
+        if let Some(todo) = meta::heading(doc, h).and_then(|x| x.todo.clone()) {
+            props.push(("ARCHIVE_TODO", todo));
+        }
+        let chunk = meta::with_properties(&chunk, &props);
+        // Org's default archive location: "<file>_archive", top level.
+        let archive = PathBuf::from(format!("{}_archive", src.display()));
+        let header = format!(
+            "#    -*- mode: org -*-\n\n\nArchived entries from file {}\n\n\n",
+            src.display()
+        );
+        let result = self.edit_file(
+            &archive,
+            |doc| {
+                if doc.text().is_empty() {
+                    Some(OpResult {
+                        tx: Transaction::replace(0..0, format!("{header}{chunk}")),
+                        selection: Selection::default(),
+                    })
+                } else {
+                    meta::insert_subtree(doc, None, &chunk)
+                }
+            },
+            cx,
+        );
+        match result {
+            Ok(_) => {
+                if let Some(r) = meta::remove_subtree(self.editor.read(cx).document(), h) {
+                    self.editor.update(cx, |e, cx| e.apply_result(r, cx));
+                }
+                let name = archive
+                    .file_name()
+                    .map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                self.toast(format!("Archived to {name}"), false, cx);
+            }
+            Err(err) => self.toast(format!("Archive failed: {err:#}"), true, cx),
+        }
+    }
+
     // ---- saving ---------------------------------------------------------------------------
 
     fn mark_dirty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -178,7 +653,7 @@ impl Workspace {
                 });
                 cx.notify();
             }
-            Err(err) => eprintln!("Save failed: {err:#}"),
+            Err(err) => self.toast(format!("Save failed: {err:#}"), true, cx),
         }
     }
 
@@ -279,13 +754,19 @@ impl Workspace {
         // One spelling per file (`a/../b.org` → `b.org`), so it matches the index and tree.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if self.path.as_ref() == Some(&path) {
+            self.show_agenda = false;
             window.focus(&self.editor.focus_handle(cx));
+            cx.notify();
             return;
         }
         let text = match read_org(&path) {
             Ok(text) => text,
             Err(err) => {
-                eprintln!("Open failed: {err:#}");
+                self.toast(
+                    format!("Couldn't open {}: {err:#}", path.display()),
+                    true,
+                    cx,
+                );
                 return;
             }
         };
@@ -302,6 +783,7 @@ impl Workspace {
         self.sync_known_tags(cx);
         self.dirty = false;
         self.reveal_in_tree(&path);
+        self.show_agenda = false;
         window.set_window_title(&self.title());
         window.focus(&self.editor.focus_handle(cx));
         self.save_session();
@@ -368,13 +850,21 @@ impl Workspace {
         if let Some(id) = target.strip_prefix("id:") {
             match self.index.read(cx).find_id(id) {
                 Some((path, offset)) => self.open_at(path, offset..offset, window, cx),
-                None => eprintln!("No heading with ID {id} in this folder"),
+                None => self.toast(
+                    format!("No heading with ID “{id}” in this folder"),
+                    true,
+                    cx,
+                ),
             }
             return;
         }
         let path = self.resolve(target);
         if !path.exists() {
-            eprintln!("Link target not found: {}", path.display());
+            self.toast(
+                format!("Link target not found: {}", path.display()),
+                true,
+                cx,
+            );
             return;
         }
         if !aster_index::is_org_file(&path) {
@@ -439,7 +929,14 @@ impl Workspace {
                 mut changes,
             }) = watch::watch(&root)
             else {
-                eprintln!("Could not watch {} for changes", root.display());
+                this.update(cx, |ws, cx| {
+                    ws.toast(
+                        format!("Can't watch {} for outside changes", root.display()),
+                        true,
+                        cx,
+                    )
+                })
+                .ok();
                 return;
             };
             // Batch events, then update the index and the open file.
@@ -561,7 +1058,9 @@ impl Workspace {
             |this, _, event: &PickerEvent, window, cx| match event {
                 PickerEvent::Confirm(target) => {
                     let target = target.clone();
+                    let refile = this.refile_source.take();
                     this.close_picker(window, cx);
+                    this.refile_source = refile;
                     this.run_pick(target, window, cx);
                 }
                 PickerEvent::Dismissed => this.close_picker(window, cx),
@@ -572,6 +1071,7 @@ impl Workspace {
     }
 
     fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refile_source = None;
         if self.picker.take().is_some() {
             window.focus(&self.editor.focus_handle(cx));
             cx.notify();
@@ -589,6 +1089,7 @@ impl Workspace {
             }
             PickTarget::File(path) => self.open_path(path, window, cx),
             PickTarget::Location(path, range) => self.open_at(path, range, window, cx),
+            PickTarget::Refile(path, parent) => self.do_refile(path, parent, cx),
         }
     }
 
@@ -598,6 +1099,9 @@ impl Workspace {
             ("Open folder…", Box::new(OpenFolder)),
             ("Go to file…", Box::new(QuickOpen)),
             ("Search in all files…", Box::new(SearchAll)),
+            ("Agenda", Box::new(ShowAgenda)),
+            ("To-do list", Box::new(ShowTodoList)),
+            ("Capture…", Box::new(Capture)),
             ("Toggle sidebar", Box::new(ToggleSidebar)),
             ("Save", Box::new(Save)),
             ("Save as…", Box::new(SaveAs)),
@@ -873,6 +1377,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::quick_open))
             .on_action(cx.listener(Self::search_all))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::show_agenda))
+            .on_action(cx.listener(Self::show_todo_list))
+            .on_action(cx.listener(Self::capture))
+            .on_action(cx.listener(Self::refile))
+            .on_action(cx.listener(Self::archive))
             .children(sidebar)
             .child(
                 div()
@@ -881,9 +1390,48 @@ impl Render for Workspace {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .children(self.find_bar.clone())
-                    .child(div().flex_1().min_h_0().child(self.editor.clone())),
+                    .children(self.find_bar.clone().filter(|_| !self.show_agenda))
+                    .child(div().flex_1().min_h_0().map(|d| {
+                        match self.agenda.as_ref().filter(|_| self.show_agenda) {
+                            Some((agenda, _)) => d.child(agenda.clone()),
+                            None => d.child(self.editor.clone()),
+                        }
+                    })),
             )
+            .children(self.capture.as_ref().map(|(c, _)| {
+                gpui::deferred(
+                    div()
+                        .absolute()
+                        .top(px(80.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(c.clone()),
+                )
+                .with_priority(2)
+            }))
+            .children(self.toast.clone().map(|(msg, error)| {
+                gpui::deferred(
+                    div()
+                        .absolute()
+                        .bottom(px(16.))
+                        .right(px(16.))
+                        .max_w(px(420.))
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .shadow_lg()
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .bg(if error { rgb(0xfef2f2) } else { rgb(0x111827) })
+                        .text_color(if error { rgb(0x991b1b) } else { rgb(0xf9fafb) })
+                        .border_1()
+                        .border_color(if error { rgb(0xfecaca) } else { rgb(0x111827) })
+                        .child(msg),
+                )
+                .with_priority(3)
+            }))
             .children(self.picker.as_ref().map(|(p, _)| {
                 gpui::deferred(
                     div()
