@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use aster_doc::meta::{self, DropTarget, Planning};
 use aster_doc::{Document, EditOrigin, Selection, ops};
 
 struct Lcg(u64);
@@ -35,7 +36,23 @@ fn random_ops_undo_to_original() {
                 at -= 1;
             }
             let sel = Selection::cursor(at);
-            let res = match rng.below(8) {
+            let hs: Vec<usize> = doc.headings().iter().map(|h| h.range.start).collect();
+            let pick = |rng: &mut Lcg| (!hs.is_empty()).then(|| hs[rng.below(hs.len())]);
+            let date = chrono::NaiveDate::from_ymd_opt(2026, 1 + rng.below(12) as u32, 1);
+            let res = match rng.below(14) {
+                8 => pick(&mut rng).and_then(|h| {
+                    let before = pick(&mut rng);
+                    let level = 1 + rng.below(3);
+                    meta::move_subtree_to(&doc, h, DropTarget { before, level })
+                }),
+                9 => pick(&mut rng)
+                    .and_then(|h| meta::set_tags(&doc, h, &["x".into(), "y".into()], sel)),
+                10 => pick(&mut rng).and_then(|h| meta::set_tags(&doc, h, &[], sel)),
+                11 => pick(&mut rng)
+                    .and_then(|h| meta::set_planning(&doc, h, Planning::Scheduled, date, sel)),
+                12 => pick(&mut rng)
+                    .and_then(|h| meta::set_planning(&doc, h, Planning::Deadline, None, sel)),
+                13 => pick(&mut rng).and_then(|h| meta::set_priority(&doc, h, Some('B'), sel)),
                 0 => ops::cycle_todo(&doc, sel, true),
                 1 => ops::cycle_todo(&doc, sel, false),
                 2 => ops::promote(&doc, sel, rng.below(2) == 0),

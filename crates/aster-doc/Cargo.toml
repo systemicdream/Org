@@ -9,3 +9,4 @@ license.workspace = true
 aster-org.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+chrono.workspace = true

@@ -4,9 +4,11 @@
 //! undoable, the tree is always in sync with the text, and structural commands (see [`ops`])
 //! are testable without any UI.
 
+pub mod dates;
 pub mod display;
 pub mod folds;
 mod history;
+pub mod meta;
 pub mod ops;
 pub mod search;
 pub mod table;

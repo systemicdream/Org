@@ -31,7 +31,12 @@ impl Transaction {
     /// Add a replacement. Panics if it overlaps an existing edit (a programming error).
     pub fn with(mut self, range: Range<usize>, text: impl Into<String>) -> Self {
         assert!(range.start <= range.end, "inverted range {range:?}");
-        let i = self.edits.partition_point(|e| e.range.start < range.start);
+        // An insertion (empty range) sorts before a replacement starting at the same offset,
+        // so "insert here, then delete what follows" is a valid pair.
+        let i = self.edits.partition_point(|e| {
+            e.range.start < range.start
+                || (e.range.start == range.start && e.range.is_empty() && !range.is_empty())
+        });
         let ok_before = i == 0 || self.edits[i - 1].range.end <= range.start;
         let ok_after = self.edits.get(i).is_none_or(|e| range.end <= e.range.start);
         assert!(ok_before && ok_after, "overlapping edit {range:?}");
@@ -119,6 +124,20 @@ mod tests {
         assert_eq!(tx.map(5, false), 6);
         assert_eq!(tx.map(6, true), 7);
         assert_eq!(tx.map(6, false), 8);
+    }
+
+    #[test]
+    fn insert_before_replacement_at_same_offset() {
+        for tx in [
+            Transaction::new().with(0..0, "X").with(0..2, ""),
+            Transaction::new().with(0..2, "").with(0..0, "X"),
+        ] {
+            let mut text = "abcd".to_string();
+            let inverse = tx.apply(&mut text);
+            assert_eq!(text, "Xcd");
+            inverse.apply(&mut text);
+            assert_eq!(text, "abcd");
+        }
     }
 
     #[test]
