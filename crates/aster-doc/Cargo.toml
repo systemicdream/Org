@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 aster-org.workspace = true
+unicode-segmentation.workspace = true
