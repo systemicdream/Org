@@ -320,7 +320,7 @@ workspace (Phase 5 index), keyboard-driven drag, hover handles/"⋯" buttons, mu
 - [x] Folder watching: index updates; open file reloads (undoable) or asks when there are
       unsaved edits; sync-conflict copies flagged
 - [x] Tag suggestions from the whole folder
-- [ ] Hands-on test on macOS and Linux
+- [x] Hands-on test
 
 Deferred: backlinks panel (with org-roam, later), creating/renaming/deleting files from the
 sidebar, multiple windows, a persistent on-disk index (ADR 0004).
