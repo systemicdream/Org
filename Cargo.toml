@@ -9,6 +9,7 @@ license = "MIT"
 
 [workspace.dependencies]
 aster-org = { path = "crates/aster-org" }
+aster-doc = { path = "crates/aster-doc" }
 aster-editor = { path = "crates/aster-editor" }
 
 # GPUI moves fast; pin exactly and upgrade deliberately.

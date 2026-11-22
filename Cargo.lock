@@ -175,6 +175,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-doc"
+version = "0.1.0"
+dependencies = [
+ "aster-org",
+]
+
+[[package]]
 name = "aster-editor"
 version = "0.1.0"
 dependencies = [
