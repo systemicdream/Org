@@ -223,6 +223,10 @@ outline and knob. On: `accent.default` track with a `text.on_accent` knob. Disab
 style, 16 px in lists and menus, 20 px in toolbars, colored `text.secondary` (accent when
 selected). Icons are bundled as SVG; never use emoji as UI icons.
 
+**App icon** — an eight-point star of warm light on a dark rounded square
+(`assets/branding/aster-icon.png`). On macOS it sits on Apple's icon grid (the square at ~80 % of
+the canvas); Linux sizes fill ~94 %. Shown at 96 px on the welcome screen.
+
 ## 9. Motion
 
 | Use | Duration | Easing |

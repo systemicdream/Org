@@ -111,6 +111,12 @@ impl Workspace {
                             .flex_col()
                             .gap_2()
                             .child(
+                                gpui::img(crate::app_icon::ICON_ASSET)
+                                    .size(px(96.))
+                                    .ml(px(-6.))
+                                    .mb_2(),
+                            )
+                            .child(
                                 div()
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_size(ramp::TITLE_LARGE.size)

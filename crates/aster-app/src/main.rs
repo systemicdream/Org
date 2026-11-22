@@ -5,6 +5,7 @@
 //! the first-run screen.
 
 mod agenda_view;
+mod app_icon;
 mod capture;
 mod file_actions;
 mod files;
@@ -169,8 +170,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     Application::new()
-        .with_assets(aster_ui::icons::Assets)
+        .with_assets(app_icon::Assets)
         .run(move |cx: &mut App| {
+            app_icon::set_dock_icon();
             let settings = Settings::load();
             let window_background = settings.window_background();
             aster_ui::init(cx.window_appearance(), settings.theme_prefs(), cx);
@@ -183,6 +185,8 @@ fn main() -> anyhow::Result<()> {
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
                         window_background,
+                        // Wayland: ties the window to the desktop entry, and so to its icon.
+                        app_id: Some(app_icon::APP_ID.into()),
                         // macOS: draw our own title area (docs/DESIGN.md §11).
                         titlebar: Some(TitlebarOptions {
                             title: Some("Aster".into()),

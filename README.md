@@ -16,7 +16,7 @@ Phase 0 (spikes). Usable for poking at, not for real notes yet.
 Requires Rust (pinned in `rust-toolchain.toml`; rustup installs it automatically).
 
 ```sh
-cargo run -p aster-app                     # reopens your last folder/file, or a sample
+cargo run -p aster-app                     # reopens your last folder/file, or the welcome screen
 cargo run -p aster-app -- ~/notes          # a folder of .org files becomes the workspace
 cargo run -p aster-app -- path/to/notes.org
 cargo test --workspace
@@ -33,6 +33,18 @@ Platform notes:
   freetype-devel vulkan-loader-devel`). `libxkbcommon-x11` is only a link-time requirement
   of gpui; the app does not use X11.
 - **Windows:** not supported yet (deferred; GPUI supports it, so it can be added later).
+
+## Installing
+
+```sh
+scripts/bundle-macos.sh     # macOS: builds target/release/Aster.app (drag it to /Applications)
+scripts/install-linux.sh    # Linux: installs to ~/.local/bin with a launcher entry and icon
+```
+
+The macOS app is ad-hoc signed, not notarized: the first time, right-click it and choose Open.
+On Linux the window's Wayland app id (`io.github.systemicdream.Aster`) matches the desktop entry,
+which is how the compositor finds the icon. The icon artwork lives in
+`assets/branding/aster-icon.png`; `scripts/make-icons.py` regenerates every size from it.
 
 ## Keys
 

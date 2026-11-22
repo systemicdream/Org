@@ -366,6 +366,8 @@ helper), configurable capture templates and targets, clocking/effort sums in the
       `cw`, `yy`, `p`, …), evil-org-style folding and `>>`/`<<`, `/` find, `:` commands
 - [x] Custom accent color (hex), alongside System and the preset swatches
 - [x] Transparency effects (Mica-like blurred base layer) where the desktop supports it
+- [x] App icon: macOS `.icns` and `.app` bundle script, Linux desktop entry and hicolor icons
+      with an install script, Dock icon for unbundled runs, Wayland app id
 - [ ] Hands-on test on macOS and Linux
 
 ---
