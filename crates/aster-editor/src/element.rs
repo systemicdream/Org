@@ -4,6 +4,7 @@
 //! with soft wrapping; rows far away use a cached visual-line count (or one line) so the
 //! document height stays stable without shaping everything.
 
+use aster_doc::display::RowDisplay;
 use aster_doc::folds::foldable_range;
 use gpui::{
     App, Bounds, ElementId, ElementInputHandler, Entity, GlobalElementId, LayoutId, PaintQuad,
@@ -36,6 +37,7 @@ pub struct PrepaintState {
     text_left: Pixels,
     /// Visible vertical range, relative to the element top.
     paint_range: (Pixels, Pixels),
+    backgrounds: Vec<PaintQuad>,
     selections: Vec<PaintQuad>,
     glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
     cursor: Option<PaintQuad>,
@@ -80,7 +82,8 @@ impl Element for EditorElement {
                     .iter()
                     .map(|&row| {
                         let scale = editor.row_scale(row);
-                        let key = editor.wrap_key(row, scale, wrap_width);
+                        let key =
+                            editor.wrap_key(row, scale, editor.row_wrap_width(row, wrap_width));
                         let lines = editor.wrap_cache.get(&key).copied().unwrap_or(1);
                         line_height * scale * lines as f32
                     })
@@ -108,8 +111,15 @@ impl Element for EditorElement {
         let full = self.editor.read(cx).mode == EditorMode::Full;
         let gutter = if full { gutter() } else { px(0.) };
         let text_left = bounds.left() + gutter;
+        let mono_family = self.editor.read(cx).mono_family.clone().unwrap_or_else(|| {
+            let family = pick_monospace(window);
+            self.editor
+                .update(cx, |e, _| e.mono_family = Some(family.clone()));
+            family
+        });
         let metrics = Metrics {
             font: style.font(),
+            mono_family,
             font_size,
             color: style.color,
             wrap_width: full.then(|| (bounds.size.width - gutter).max(px(80.))),
@@ -138,24 +148,28 @@ impl Element for EditorElement {
         for &row in &editor.visible_rows {
             let scale = editor.row_scale(row);
             let lh = line_height * scale;
-            let key = editor.wrap_key(row, scale, metrics.wrap_width);
+            let indent = editor.row_indent(row);
+            let key = editor.wrap_key(row, scale, editor.row_wrap_width(row, metrics.wrap_width));
             let estimate = editor.wrap_cache.get(&key).copied().unwrap_or(1);
             let near = (y + lh * estimate as f32 >= paint_top - overscan
                 && y <= paint_bottom + overscan)
                 || row == cursor_row;
-            let (wrapped, visual_lines) = if near {
-                let w = editor.shape_row(row, &metrics, window);
+            let (wrapped, display, visual_lines) = if near {
+                let (w, display) = editor.shape_row(row, &metrics, window);
                 let n = w.wrap_boundaries().len() + 1;
                 if n != estimate || !editor.wrap_cache.contains_key(&key) {
                     wrap_updates.push((key, n));
                 }
-                (Some(w), n)
+                (Some(w), display, n)
             } else {
-                (None, estimate)
+                let display = RowDisplay::plain(editor.doc.text(), editor.line_range(row));
+                (None, display, estimate)
             };
             rows.push(RowLayout {
                 row,
                 top: y,
+                indent,
+                display,
                 line_height: lh,
                 wrapped,
                 visual_lines,
@@ -184,6 +198,7 @@ impl Element for EditorElement {
         let selection_color = rgba(0x3b82f640);
         let sel = editor.selected_range.clone();
         let mut selections = Vec::new();
+        let mut backgrounds = Vec::new();
         let mut glyphs = Vec::new();
         let text = editor.doc.text();
 
@@ -193,9 +208,31 @@ impl Element for EditorElement {
             }
             let w = r.wrapped.as_ref().expect("filtered");
             let lh = r.line_height;
-            let origin = point(text_left, bounds.top() + r.top);
+            let origin = point(text_left + r.indent, bounds.top() + r.top);
             let range = editor.line_range(r.row);
-            let line_width = wrap_width.unwrap_or(w.width());
+            let line_width = editor
+                .row_wrap_width(r.row, wrap_width)
+                .unwrap_or(w.width());
+
+            // Tinted background behind code blocks.
+            if full && editor.row_kind(r.row).block_background() {
+                backgrounds.push(fill(
+                    Bounds::from_corners(
+                        point(origin.x - px(8.), origin.y),
+                        point(bounds.right(), origin.y + r.height()),
+                    ),
+                    rgb(0xf3f4f6),
+                ));
+            }
+            if full && editor.row_kind(r.row).left_bar() {
+                backgrounds.push(fill(
+                    Bounds::from_corners(
+                        point(origin.x - px(10.), origin.y),
+                        point(origin.x - px(7.), origin.y + r.height()),
+                    ),
+                    rgb(0xd1d5db),
+                ));
+            }
 
             // Selection rectangles, one per visual line touched.
             let row_end = editor
@@ -204,8 +241,10 @@ impl Element for EditorElement {
                 .copied()
                 .unwrap_or(text.len());
             if !sel.is_empty() && sel.start < row_end.max(range.end) && sel.end > range.start {
-                let s = sel.start.max(range.start) - range.start;
-                let e = sel.end.min(range.end).max(range.start) - range.start;
+                let s = r.display.to_display(sel.start.max(range.start));
+                let e = r
+                    .display
+                    .to_display(sel.end.min(range.end).max(range.start));
                 let newline_selected = sel.end > range.end && range.end < text.len();
                 let p0 = w.position_for_index(s, lh).unwrap_or_default();
                 let p1 = w.position_for_index(e, lh).unwrap_or(p0);
@@ -250,9 +289,12 @@ impl Element for EditorElement {
                     };
                     let shaped = shape_glyph(window, glyph, color, font_size);
                     let gy = bounds.top() + r.top + (lh - line_height) / 2.;
-                    glyphs.push((shaped, point(bounds.left() + px(4.), gy), line_height));
+                    let gx = (origin.x - px(18.)).max(bounds.left() + px(4.));
+                    glyphs.push((shaped, point(gx, gy), line_height));
                     if folded {
-                        let end = w.position_for_index(range.len(), lh).unwrap_or_default();
+                        let end = w
+                            .position_for_index(r.display.text.len(), lh)
+                            .unwrap_or_default();
                         let shaped =
                             shape_glyph(window, " …", muted(), font_size * (lh / line_height));
                         glyphs.push((shaped, origin + point(end.x + px(2.), end.y), lh));
@@ -280,11 +322,10 @@ impl Element for EditorElement {
             .ok()
             .and_then(|i| {
                 let r = &rows[i];
-                let col =
-                    cursor.min(editor.line_range(cursor_row).end) - editor.line_starts[cursor_row];
+                let col = r.display.to_display(cursor);
                 let p = r.wrapped.as_ref()?.position_for_index(col, r.line_height)?;
                 Some(Bounds::new(
-                    point(text_left + p.x, bounds.top() + r.top + p.y),
+                    point(text_left + r.indent + p.x, bounds.top() + r.top + p.y),
                     size(px(2.), r.line_height),
                 ))
             });
@@ -320,6 +361,7 @@ impl Element for EditorElement {
             rows,
             text_left,
             paint_range: (paint_top, paint_bottom),
+            backgrounds,
             selections,
             glyphs,
             cursor: cursor_quad,
@@ -343,6 +385,9 @@ impl Element for EditorElement {
             ElementInputHandler::new(bounds, self.editor.clone()),
             cx,
         );
+        for quad in prepaint.backgrounds.drain(..) {
+            window.paint_quad(quad);
+        }
         for quad in prepaint.selections.drain(..) {
             window.paint_quad(quad);
         }
@@ -354,7 +399,7 @@ impl Element for EditorElement {
             if r.top + r.height() < top || r.top > bottom {
                 continue;
             }
-            let origin = point(prepaint.text_left, bounds.top() + r.top);
+            let origin = point(prepaint.text_left + r.indent, bounds.top() + r.top);
             w.paint_background(origin, r.line_height, TextAlign::Left, None, window, cx)
                 .ok();
             w.paint(origin, r.line_height, TextAlign::Left, None, window, cx)
@@ -385,4 +430,24 @@ impl Element for EditorElement {
             });
         });
     }
+}
+
+/// First installed monospace font from a list of common ones.
+fn pick_monospace(window: &mut Window) -> gpui::SharedString {
+    const CANDIDATES: &[&str] = &[
+        "SF Mono",
+        "Menlo",
+        "JetBrains Mono",
+        "Cascadia Code",
+        "DejaVu Sans Mono",
+        "Noto Sans Mono",
+        "Liberation Mono",
+        "Ubuntu Mono",
+        "Courier New",
+    ];
+    let installed = window.text_system().all_font_names();
+    CANDIDATES
+        .iter()
+        .find(|c| installed.iter().any(|f| f == *c))
+        .map_or_else(|| "monospace".into(), |c| (*c).into())
 }

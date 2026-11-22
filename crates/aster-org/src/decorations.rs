@@ -3,6 +3,8 @@
 //! The editor shows raw text for an element whose range contains the cursor, and the
 //! decorated form otherwise. Ranges are byte offsets into the document.
 
+#![allow(clippy::single_range_in_vec_init)] // `hide` lists ranges; a single one is common.
+
 use std::ops::Range;
 
 use orgize::rowan::ast::AstNode;
@@ -35,7 +37,7 @@ pub enum DecoKind {
     /// Any other `#+KEY: value` line.
     Keyword,
     /// `#+begin_…` / `#+end_…` lines.
-    BlockDelimiter,
+    BlockDelimiter(BlockKind),
     /// Lines inside a block. `lang` is set for source blocks.
     BlockContent {
         block: BlockKind,
@@ -87,7 +89,7 @@ impl Decoration {
     pub fn is_line_level(&self) -> bool {
         matches!(
             self.kind,
-            DecoKind::BlockDelimiter
+            DecoKind::BlockDelimiter(_)
                 | DecoKind::BlockContent { .. }
                 | DecoKind::Drawer
                 | DecoKind::Planning
@@ -160,10 +162,10 @@ pub(crate) fn collect(root: &SyntaxNode) -> Vec<Decoration> {
                             .children_with_tokens()
                             .find(|c| c.kind() == SyntaxKind::SRC_BLOCK_LANGUAGE)
                             .map(|c| c.to_string());
-                        out.push(Decoration::styled(DecoKind::BlockDelimiter, r));
+                        out.push(Decoration::styled(DecoKind::BlockDelimiter(block), r));
                     }
                     SyntaxKind::BLOCK_END => {
-                        out.push(Decoration::styled(DecoKind::BlockDelimiter, r));
+                        out.push(Decoration::styled(DecoKind::BlockDelimiter(block), r));
                     }
                     SyntaxKind::BLOCK_CONTENT => out.push(Decoration::styled(
                         DecoKind::BlockContent {
@@ -381,7 +383,7 @@ mod tests {
         assert!(ds.iter().any(|d| d.kind == DecoKind::Drawer));
         assert_eq!(
             ds.iter()
-                .filter(|d| d.kind == DecoKind::BlockDelimiter)
+                .filter(|d| matches!(d.kind, DecoKind::BlockDelimiter(_)))
                 .count(),
             2
         );

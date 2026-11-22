@@ -57,7 +57,7 @@ impl RowDisplay {
         let mut text = String::new();
         let mut segments = Vec::new();
         let mut pos = line.start;
-        let mut push_text = |text: &mut String, segments: &mut Vec<Segment>, r: Range<usize>| {
+        let push_text = |text: &mut String, segments: &mut Vec<Segment>, r: Range<usize>| {
             if r.is_empty() {
                 return;
             }

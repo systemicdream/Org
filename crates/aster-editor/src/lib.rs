@@ -11,6 +11,7 @@
 mod element;
 mod find_bar;
 mod input;
+mod preview;
 mod spans;
 
 use std::collections::HashMap;
@@ -18,8 +19,10 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::time::Duration;
 
+use aster_doc::display::RowDisplay;
 use aster_doc::folds::Folds;
 use aster_doc::{Document, EditOrigin, Selection, ops, search, text};
+use aster_org::{DecoKind, Decoration};
 use element::EditorElement;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Font,
@@ -27,6 +30,7 @@ use gpui::{
     ScrollHandle, SharedString, Subscription, Task, TextRun, Window, WrappedLine, actions, div,
     point, prelude::*, px, rgb,
 };
+use preview::RowKind;
 
 pub use find_bar::{FindBar, FindBarEvent};
 
@@ -165,7 +169,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
     /// The text changed.
     Edited,
@@ -173,6 +177,8 @@ pub enum EditorEvent {
     Confirm { back: bool },
     /// Escape.
     Cancel,
+    /// Cmd/Ctrl+click on a link the editor can't follow itself (URLs, files).
+    OpenLink(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,9 +200,24 @@ enum Granularity {
 #[derive(Clone)]
 struct Metrics {
     font: Font,
+    mono_family: SharedString,
     font_size: Pixels,
     color: Hsla,
     wrap_width: Option<Pixels>,
+}
+
+/// Horizontal indent per outline level (org-indent style).
+fn indent_step() -> Pixels {
+    px(22.)
+}
+
+/// Per-line presentation, recomputed on every change.
+struct RowMeta {
+    kind: RowKind,
+    /// Outline depth used for indentation.
+    depth: usize,
+    /// Hash of the line's text, for the wrap cache.
+    hash: u64,
 }
 
 /// Where each visible row was laid out in the last frame.
@@ -210,6 +231,10 @@ struct RowLayout {
     row: usize,
     /// Relative to `Layout::bounds.top()`.
     top: Pixels,
+    /// Horizontal offset from `Layout::text_left`.
+    indent: Pixels,
+    /// What is shown for this line (markup hidden unless the cursor is in it).
+    display: RowDisplay,
     line_height: Pixels,
     /// Shaped only for rows near the viewport; others are shaped on demand.
     wrapped: Option<WrappedLine>,
@@ -238,8 +263,9 @@ pub struct OrgEditor {
     line_starts: Vec<usize>,
     /// Org syntax styling, sorted by start. Recomputed on every change.
     org_spans: spans::Spans,
-    /// Per line: (text size scale, hash of the line's text). Recomputed on every change.
-    row_meta: Vec<(f32, u64)>,
+    row_meta: Vec<RowMeta>,
+    /// Monospace font family, resolved from installed fonts on first paint.
+    mono_family: Option<SharedString>,
     folds: Folds,
     hidden: Vec<Range<usize>>,
     visible_rows: Vec<usize>,
@@ -302,6 +328,7 @@ impl OrgEditor {
             doc: Document::new(text),
             line_starts: Vec::new(),
             row_meta: Vec::new(),
+            mono_family: None,
             org_spans: Vec::new(),
             folds: Folds::default(),
             hidden: Vec::new(),
@@ -424,11 +451,27 @@ impl OrgEditor {
         self.line_starts.push(0);
         self.line_starts
             .extend(text.match_indices('\n').map(|(i, _)| i + 1));
-        self.row_meta = (0..self.line_starts.len())
-            .map(|row| {
+        let kinds = if self.mode == EditorMode::Full {
+            preview::row_kinds(
+                &self.line_starts,
+                text.len(),
+                self.doc.headings(),
+                self.doc.decorations(),
+            )
+        } else {
+            vec![(RowKind::Body, 0); self.line_starts.len()]
+        };
+        self.row_meta = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(row, (kind, depth))| {
                 let mut h = DefaultHasher::new();
                 self.doc.text()[self.line_range(row)].hash(&mut h);
-                (self.compute_row_scale(row), h.finish())
+                RowMeta {
+                    kind,
+                    depth,
+                    hash: h.finish(),
+                }
             })
             .collect();
         self.org_spans = if self.mode == EditorMode::Full {
@@ -504,43 +547,98 @@ impl OrgEditor {
             .map(|h| h.level)
     }
 
-    /// Text size multiplier for a row (headings are larger).
+    /// Text size multiplier for a row (headings and titles are larger).
     fn row_scale(&self, row: usize) -> f32 {
-        self.row_meta.get(row).map_or(1.0, |m| m.0)
+        self.row_meta.get(row).map_or(1.0, |m| m.kind.scale())
     }
 
-    fn compute_row_scale(&self, row: usize) -> f32 {
+    fn row_kind(&self, row: usize) -> RowKind {
+        self.row_meta
+            .get(row)
+            .map_or(RowKind::Body, |m| m.kind.clone())
+    }
+
+    /// Horizontal indent of a row (outline depth).
+    fn row_indent(&self, row: usize) -> Pixels {
         if self.mode != EditorMode::Full {
-            return 1.0;
+            return px(0.);
         }
-        match self.heading_level(row) {
-            Some(1) => 1.5,
-            Some(2) => 1.3,
-            Some(3) => 1.15,
-            _ => 1.0,
-        }
+        indent_step() * self.row_meta.get(row).map_or(0, |m| m.depth) as f32
+    }
+
+    /// Wrap width available to a row after its indent.
+    fn row_wrap_width(&self, row: usize, wrap_width: Option<Pixels>) -> Option<Pixels> {
+        wrap_width.map(|w| (w - self.row_indent(row)).max(px(80.)))
     }
 
     fn wrap_key(&self, row: usize, scale: f32, wrap_width: Option<Pixels>) -> u64 {
         let mut h = DefaultHasher::new();
-        self.row_meta.get(row).map(|m| m.1).hash(&mut h);
+        self.row_meta.get(row).map(|m| m.hash).hash(&mut h);
         scale.to_bits().hash(&mut h);
         wrap_width.map(|w| f32::from(w).to_bits()).hash(&mut h);
         h.finish()
     }
 
-    /// Styled ranges within one line: Org syntax (cached per edit), search matches, and the
-    /// IME composition. Spans never cross lines, so each list is searched by start offset.
-    fn row_styles(&self, range: Range<usize>) -> spans::Spans {
+    /// Whether the cursor is editing `d`, so its raw markup should show.
+    fn revealed(&self, d: &Decoration) -> bool {
+        let head = self.cursor_offset();
+        let sel = &self.selected_range;
+        let on_line = || {
+            let row = self.row_for_offset(d.range.start);
+            self.line_range(row).contains(&head) || self.line_range(row).end == head
+        };
+        match d.kind {
+            // Whole-line markup shows while the cursor is anywhere on that line.
+            DecoKind::HeadingStars | DecoKind::Title => on_line(),
+            _ => {
+                (d.range.start <= head && head <= d.range.end)
+                    || (!sel.is_empty() && sel.start < d.range.end && sel.end > d.range.start)
+            }
+        }
+    }
+
+    /// Decorations that affect inline text on the line `range`.
+    fn inline_decorations(&self, range: &Range<usize>) -> &[Decoration] {
+        let decos = self.doc.decorations();
+        let i = decos.partition_point(|d| d.range.start < range.start);
+        let j = decos.partition_point(|d| d.range.start <= range.end);
+        &decos[i..j.max(i)]
+    }
+
+    /// What row `row` displays right now.
+    fn row_display(&self, row: usize) -> RowDisplay {
+        let range = self.line_range(row);
+        if self.mode != EditorMode::Full {
+            return RowDisplay::plain(self.doc.text(), range);
+        }
+        let decos = self.inline_decorations(&range);
+        RowDisplay::build(self.doc.text(), range, decos, |d| self.revealed(d))
+    }
+
+    /// Styled ranges in display coordinates: line style, Org syntax, inline markup, search
+    /// matches, and the IME composition.
+    fn row_styles(&self, row: usize, display: &RowDisplay) -> spans::Spans {
+        let range = display.line.clone();
+        let to_disp = |r: &Range<usize>| display.display_range(r.clone());
         let in_row = |r: &Range<usize>| r.start >= range.start && r.start <= range.end;
+        let mut out: spans::Spans = vec![(0..display.text.len(), self.row_kind(row).base_style())];
+
         let i = self
             .org_spans
             .partition_point(|(r, _)| r.start < range.start);
-        let mut out: spans::Spans = self.org_spans[i..]
-            .iter()
-            .take_while(|(r, _)| r.start <= range.end)
-            .cloned()
-            .collect();
+        out.extend(
+            self.org_spans[i..]
+                .iter()
+                .take_while(|(r, _)| r.start <= range.end)
+                .map(|(r, st)| (to_disp(r), *st)),
+        );
+        if self.mode == EditorMode::Full {
+            for d in self.inline_decorations(&range) {
+                if let Some(st) = preview::inline_style(&d.kind) {
+                    out.push((to_disp(&d.range), st));
+                }
+            }
+        }
         if let Some(search) = &self.search {
             let i = search.matches.partition_point(|m| m.start < range.start);
             for (j, m) in search.matches[i..]
@@ -554,7 +652,7 @@ impl OrgEditor {
                     0xfde04780
                 };
                 out.push((
-                    m.clone(),
+                    to_disp(m),
                     spans::SpanStyle {
                         background: Some(gpui::rgba(bg).into()),
                         ..Default::default()
@@ -564,7 +662,7 @@ impl OrgEditor {
         }
         if let Some(marked) = self.marked_range.as_ref().filter(|m| in_row(m)) {
             out.push((
-                marked.clone(),
+                to_disp(marked),
                 spans::SpanStyle {
                     underline: true,
                     ..Default::default()
@@ -574,33 +672,44 @@ impl OrgEditor {
         out
     }
 
-    /// Lay out one row with the given styles.
-    fn shape_row(&self, row: usize, metrics: &Metrics, window: &mut Window) -> WrappedLine {
-        let range = self.line_range(row);
-        let styles = self.row_styles(range.clone());
-        let scale = self.row_scale(row);
+    /// Lay out one row: its display text, styled and wrapped.
+    fn shape_row(
+        &self,
+        row: usize,
+        metrics: &Metrics,
+        window: &mut Window,
+    ) -> (WrappedLine, RowDisplay) {
+        let display = self.row_display(row);
+        let styles = self.row_styles(row, &display);
+        let kind = self.row_kind(row);
+        let mut font = metrics.font.clone();
+        if kind.monospace() {
+            font.family = metrics.mono_family.clone();
+        }
         let base = TextRun {
             len: 0,
-            font: metrics.font.clone(),
+            font,
             color: metrics.color,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let runs = spans::runs_for_range(&base, &styles, range.clone());
-        let text: SharedString = self.doc.text()[range].to_string().into();
-        window
+        let runs =
+            spans::runs_for_range(&base, &styles, 0..display.text.len(), &metrics.mono_family);
+        let text: SharedString = display.text.clone().into();
+        let wrapped = window
             .text_system()
             .shape_text(
                 text,
-                metrics.font_size * scale,
+                metrics.font_size * kind.scale(),
                 &runs,
-                metrics.wrap_width,
+                self.row_wrap_width(row, metrics.wrap_width),
                 None,
             )
             .ok()
             .and_then(|mut lines| lines.pop())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (wrapped, display)
     }
 
     /// Make sure layout row `i` is shaped (rows far from the viewport are shaped lazily).
@@ -611,9 +720,10 @@ impl OrgEditor {
         if layout.rows[i].wrapped.is_some() {
             return;
         }
-        let wrapped = self.shape_row(layout.rows[i].row, &metrics, window);
+        let (wrapped, display) = self.shape_row(layout.rows[i].row, &metrics, window);
         if let Some(layout) = self.layout.as_mut() {
             layout.rows[i].wrapped = Some(wrapped);
+            layout.rows[i].display = display;
         }
     }
 
@@ -700,7 +810,7 @@ impl OrgEditor {
         self.ensure_shaped(i, window);
         let layout = self.layout.as_ref().expect("layout exists");
         let r = &layout.rows[i];
-        let col = cursor.min(self.line_range(row).end) - self.line_starts[row];
+        let col = r.display.to_display(cursor);
         let pos = r
             .wrapped
             .as_ref()
@@ -736,41 +846,45 @@ impl OrgEditor {
         let col = match wrapped.closest_index_for_position(point(goal_x, y), t.line_height) {
             Ok(i) | Err(i) => i,
         };
-        let range = self.line_range(t.row);
-        (range.start + col).min(range.end)
+        t.display.to_buffer(col)
     }
 
-    /// Document offset at a window position.
-    fn index_for_position(&mut self, position: Point<Pixels>, window: &mut Window) -> usize {
-        let Some(layout) = self.layout.as_ref() else {
-            return 0;
-        };
+    /// The layout row and display index under a window position.
+    fn hit_test(&mut self, position: Point<Pixels>, window: &mut Window) -> Option<(usize, usize)> {
+        let layout = self.layout.as_ref()?;
         if layout.rows.is_empty() {
-            return 0;
+            return None;
         }
-        let y = position.y - layout.bounds.top();
-        if y < px(0.) {
-            return 0;
-        }
+        let y = (position.y - layout.bounds.top()).max(px(0.));
         let i = layout
             .rows
             .partition_point(|r| r.top + r.height() <= y)
             .min(layout.rows.len() - 1);
-        let x = position.x - layout.text_left;
         self.ensure_shaped(i, window);
         let layout = self.layout.as_ref().expect("layout exists");
         let r = &layout.rows[i];
-        let range = self.line_range(r.row);
         if y >= r.top + r.height() {
-            return range.end;
+            return Some((i, r.display.text.len()));
         }
+        let x = position.x - layout.text_left - r.indent;
         let local = point(x.max(px(0.)), (y - r.top).max(px(0.)));
         let col = r.wrapped.as_ref().map_or(0, |w| {
             match w.closest_index_for_position(local, r.line_height) {
                 Ok(i) | Err(i) => i,
             }
         });
-        (range.start + col).min(range.end)
+        Some((i, col))
+    }
+
+    /// Document offset at a window position.
+    fn index_for_position(&mut self, position: Point<Pixels>, window: &mut Window) -> usize {
+        match self.hit_test(position, window) {
+            Some((i, col)) => {
+                let layout = self.layout.as_ref().expect("layout exists");
+                layout.rows[i].display.to_buffer(col)
+            }
+            None => 0,
+        }
     }
 
     /// Window-space rectangle of the character range, for IME candidate windows.
@@ -779,13 +893,13 @@ impl OrgEditor {
         let row = self.row_for_offset(range.start);
         let r = &layout.rows[self.layout_index_for_row(row)?];
         let wrapped = r.wrapped.as_ref()?;
-        let start = self.line_starts[row];
         let end = range.end.min(self.line_range(row).end);
-        let p0 = wrapped.position_for_index(range.start - start, r.line_height)?;
+        let disp = r.display.display_range(range.start..end);
+        let p0 = wrapped.position_for_index(disp.start, r.line_height)?;
         let p1 = wrapped
-            .position_for_index(end - start, r.line_height)
+            .position_for_index(disp.end, r.line_height)
             .unwrap_or(p0);
-        let origin = point(layout.text_left, layout.bounds.top() + r.top);
+        let origin = point(layout.text_left + r.indent, layout.bounds.top() + r.top);
         Some(Bounds::from_corners(
             origin + p0,
             origin + point(p1.x.max(p0.x), p0.y + r.line_height),
@@ -1299,6 +1413,120 @@ impl OrgEditor {
 
     // ---- mouse --------------------------------------------------------------------------
 
+    /// Handle clicks on live-preview widgets: fold arrows, checkboxes, and Cmd/Ctrl+click
+    /// on links. Returns true when the click was consumed.
+    fn click_widget(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((i, col)) = self.hit_test(event.position, window) else {
+            return false;
+        };
+        let layout = self.layout.as_ref().expect("layout exists");
+        let r = &layout.rows[i];
+        let row = r.row;
+
+        // Left of a heading's text (gutter or indent): toggle its fold.
+        if event.position.x < layout.text_left + r.indent && self.heading_level(row).is_some() {
+            let start = self.line_starts[row];
+            if let Some(h) = self
+                .doc
+                .headings()
+                .iter()
+                .find(|h| h.range.start == start)
+                .cloned()
+            {
+                self.toggle_fold_heading(&h, cx);
+            }
+            return true;
+        }
+
+        // A rendered checkbox glyph: toggle it without moving the cursor.
+        let glyph = r
+            .display
+            .segments
+            .iter()
+            .find(|s| s.replaced && s.disp.start <= col && col <= s.disp.end)
+            .map(|s| s.buf.clone());
+        if let Some(buf) = glyph
+            && self
+                .doc
+                .decorations()
+                .iter()
+                .any(|d| d.range == buf && matches!(d.kind, DecoKind::Checkbox { .. }))
+        {
+            let result = ops::toggle_checkbox(&self.doc, Selection::cursor(buf.start));
+            if let Some(result) = result {
+                let sel = self.selection();
+                let before = sel;
+                let after = sel.map(&result.tx);
+                self.doc.apply(result.tx, before, after, EditOrigin::Other);
+                self.doc.seal_undo_group();
+                self.set_selection(after);
+                self.after_change(cx);
+            }
+            return true;
+        }
+
+        // Cmd/Ctrl+click follows a link.
+        if event.modifiers.secondary() {
+            let offset = r.display.to_buffer(col);
+            let target = self.doc.decorations().iter().find_map(|d| match &d.kind {
+                DecoKind::Link { target, .. }
+                    if d.range.start <= offset && offset <= d.range.end =>
+                {
+                    Some(target.clone())
+                }
+                _ => None,
+            });
+            if let Some(target) = target {
+                self.follow_link(&target, cx);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Follow a link: jump to headings and IDs in this document, or ask the host to open it.
+    fn follow_link(&mut self, target: &str, cx: &mut Context<Self>) {
+        let text = self.doc.text();
+        let dest = if let Some(title) = target.strip_prefix('*') {
+            self.doc
+                .headings()
+                .iter()
+                .find(|h| h.title == title.trim())
+                .map(|h| h.range.start)
+        } else if let Some(id) = target.strip_prefix("id:") {
+            text.match_indices(":ID:")
+                .find(|(i, _)| {
+                    let line_end = text[*i..].find('\n').map_or(text.len(), |e| i + e);
+                    text[i + 4..line_end].trim() == id.trim()
+                })
+                .and_then(|(i, _)| {
+                    self.doc
+                        .headings()
+                        .iter()
+                        .rev()
+                        .find(|h| h.range.start <= i)
+                        .map(|h| h.range.start)
+                })
+        } else {
+            None
+        };
+        match dest {
+            Some(at) => {
+                if self.folds.reveal(at, self.doc.headings(), self.doc.text()) {
+                    self.recompute_lines();
+                }
+                self.move_to(at, cx);
+            }
+            None if target.starts_with('*') || target.starts_with("id:") => {}
+            None => cx.emit(EditorEvent::OpenLink(target.to_string())),
+        }
+    }
+
     /// Range for a click with the given granularity at `offset`.
     fn granular_range(&self, granularity: Granularity, offset: usize) -> Range<usize> {
         match granularity {
@@ -1326,26 +1554,8 @@ impl OrgEditor {
         window.focus(&self.focus_handle);
         self.goal_x = None;
 
-        // Clicking the gutter next to a heading toggles its fold.
-        if self.mode == EditorMode::Full
-            && let Some(layout) = self.layout.as_ref()
-            && event.position.x < layout.text_left
-        {
-            let offset = self.index_for_position(event.position, window);
-            let row = self.row_for_offset(offset);
-            if self.heading_level(row).is_some() {
-                let start = self.line_starts[row];
-                if let Some(h) = self
-                    .doc
-                    .headings()
-                    .iter()
-                    .find(|h| h.range.start == start)
-                    .cloned()
-                {
-                    self.toggle_fold_heading(&h, cx);
-                }
-                return;
-            }
+        if self.mode == EditorMode::Full && self.click_widget(event, window, cx) {
+            return;
         }
 
         let offset = self.index_for_position(event.position, window);

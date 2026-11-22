@@ -70,10 +70,10 @@ impl Workspace {
         let sub = cx.subscribe_in(
             &editor,
             window,
-            |this, _, event: &EditorEvent, window, cx| {
-                if *event == EditorEvent::Edited {
-                    this.mark_dirty(window, cx);
-                }
+            |this, _, event: &EditorEvent, window, cx| match event {
+                EditorEvent::Edited => this.mark_dirty(window, cx),
+                EditorEvent::OpenLink(target) => this.open_link(target, window, cx),
+                _ => {}
             },
         );
         (editor, sub)
@@ -199,6 +199,42 @@ impl Workspace {
         window.set_window_title(&self.title());
         window.focus(&self.editor.focus_handle(cx));
         cx.notify();
+    }
+
+    /// Open a link target: web/mail links in the browser, `.org` files here, other files with
+    /// the system's default app.
+    fn open_link(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if target.contains("://") || target.starts_with("mailto:") {
+            cx.open_url(target);
+            return;
+        }
+        let path = target.strip_prefix("file:").unwrap_or(target);
+        // Org allows `file:notes.org::*Heading` search options; ignore them for now.
+        let path = path.split("::").next().unwrap_or(path);
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => std::env::home_dir().unwrap_or_default().join(rest),
+            None => PathBuf::from(path),
+        };
+        let path = if path.is_relative() {
+            self.path
+                .as_deref()
+                .and_then(Path::parent)
+                .map_or(path.clone(), |dir| dir.join(&path))
+        } else {
+            path
+        };
+        if !path.exists() {
+            eprintln!("Link target not found: {}", path.display());
+            return;
+        }
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("org"))
+        {
+            self.open_path(path, window, cx);
+        } else {
+            cx.open_with_system(&path);
+        }
     }
 
     fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {

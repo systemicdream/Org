@@ -35,13 +35,14 @@ impl FindBar {
                 }
                 EditorEvent::Confirm { back } => this.next(*back, cx),
                 EditorEvent::Cancel => cx.emit(FindBarEvent::Dismissed),
+                EditorEvent::OpenLink(_) => {}
             }),
             cx.subscribe(
                 &replacement,
                 |this, _, event: &EditorEvent, cx| match event {
                     EditorEvent::Confirm { .. } => this.replace_one(cx),
                     EditorEvent::Cancel => cx.emit(FindBarEvent::Dismissed),
-                    EditorEvent::Edited => {}
+                    EditorEvent::Edited | EditorEvent::OpenLink(_) => {}
                 },
             ),
             // Keep the match counter current as the document changes.
