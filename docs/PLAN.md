@@ -254,7 +254,7 @@ Phases 2–4 are where most of the effort lands.
 - [x] Ops preserve CRLF and no-trailing-newline files; randomized test undoes back to exact bytes
 - [x] Editor wired to `aster-doc`, with default keybindings for all of the above
 - [x] Text storage decision: plain `String` for now ([0003](decisions/0003-text-storage.md))
-- [ ] Hands-on test of the new commands on macOS and Linux
+- [x] Hands-on test of the new commands
 
 ---
 
