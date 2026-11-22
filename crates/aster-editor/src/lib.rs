@@ -10,6 +10,7 @@
 
 mod element;
 mod find_bar;
+mod highlight;
 mod input;
 mod preview;
 mod spans;
@@ -263,10 +264,15 @@ pub struct OrgEditor {
     line_starts: Vec<usize>,
     /// Org syntax styling, sorted by start. Recomputed on every change.
     org_spans: spans::Spans,
+    /// Highlighted source blocks, keyed by hash of (language, code), so unchanged blocks are
+    /// not re-highlighted on every keystroke.
+    highlight_cache: HashMap<u64, std::rc::Rc<spans::Spans>>,
     row_meta: Vec<RowMeta>,
     /// Monospace font family, resolved from installed fonts on first paint.
     mono_family: Option<SharedString>,
     folds: Folds,
+    /// Document version the folds were last remapped for.
+    synced_version: u64,
     hidden: Vec<Range<usize>>,
     visible_rows: Vec<usize>,
     selected_range: Range<usize>,
@@ -330,7 +336,9 @@ impl OrgEditor {
             row_meta: Vec::new(),
             mono_family: None,
             org_spans: Vec::new(),
+            highlight_cache: HashMap::new(),
             folds: Folds::default(),
+            synced_version: 0,
             hidden: Vec::new(),
             visible_rows: Vec::new(),
             selected_range: 0..0,
@@ -418,8 +426,12 @@ impl OrgEditor {
     }
 
     fn after_change(&mut self, cx: &mut Context<Self>) {
-        if let Some(tx) = self.doc.last_change() {
-            self.folds.remap(tx, self.doc.headings(), self.doc.text());
+        // Follow the text change with view state, once per document version.
+        if self.synced_version != self.doc.version() {
+            if let Some(tx) = self.doc.last_change() {
+                self.folds.remap(tx, self.doc.headings(), self.doc.text());
+            }
+            self.synced_version = self.doc.version();
         }
         self.recompute_lines();
         self.refresh_search();
@@ -437,6 +449,11 @@ impl OrgEditor {
             return;
         }
         let Some(result) = result else { return };
+        if result.tx.is_empty() {
+            // Nothing to change; just move (e.g. Tab to the next table cell).
+            self.move_to(result.selection.head, cx);
+            return;
+        }
         let before = self.selection();
         self.doc
             .apply(result.tx, before, result.selection, EditOrigin::Other);
@@ -476,6 +493,7 @@ impl OrgEditor {
             .collect();
         self.org_spans = if self.mode == EditorMode::Full {
             let mut s = spans::style_spans(self.doc.headings(), self.doc.text());
+            s.extend(self.code_spans());
             // Stable: spans starting at the same offset keep their override order.
             s.sort_by_key(|(r, _)| r.start);
             s
@@ -492,6 +510,36 @@ impl OrgEditor {
                 hidden.get(i).is_none_or(|r| start < r.start)
             })
             .collect();
+    }
+
+    /// Syntax-highlight spans for every source block (absolute offsets), using the cache.
+    fn code_spans(&mut self) -> spans::Spans {
+        let mut out = spans::Spans::new();
+        let mut used = HashMap::new();
+        for d in self.doc.decorations() {
+            let DecoKind::BlockContent {
+                lang: Some(lang), ..
+            } = &d.kind
+            else {
+                continue;
+            };
+            let code = &self.doc.text()[d.range.clone()];
+            let mut h = DefaultHasher::new();
+            (lang, code).hash(&mut h);
+            let key = h.finish();
+            let spans = self
+                .highlight_cache
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| std::rc::Rc::new(highlight::highlight(lang, code)));
+            out.extend(spans.iter().map(|(r, st)| {
+                (r.start + d.range.start..r.end + d.range.start, *st)
+            }));
+            used.insert(key, spans);
+        }
+        // Keep only blocks that still exist.
+        self.highlight_cache = used;
+        out
     }
 
     /// Byte range of line `row`, excluding its line terminator (`\n` or `\r\n`).
@@ -770,6 +818,10 @@ impl OrgEditor {
         self.autoscroll = true;
         self.restart_blink(cx);
         cx.notify();
+    }
+
+    fn cursor_in_table(&self) -> bool {
+        self.row_kind(self.row_for_offset(self.cursor_offset())) == RowKind::Table
     }
 
     fn cursor_on_heading_line(&self) -> bool {
@@ -1257,10 +1309,15 @@ impl OrgEditor {
         cx.emit(EditorEvent::Cancel);
     }
 
-    /// On a heading line, Tab demotes the heading and its children; elsewhere it indents.
+    /// In a table, Tab aligns it and moves to the next cell. On a heading line it demotes the
+    /// heading and its children; elsewhere it indents.
     fn tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
         match self.mode {
             EditorMode::SingleLine => cx.propagate(),
+            EditorMode::Full if self.cursor_in_table() => {
+                let r = aster_doc::table::next_cell(&self.doc, self.selection(), false);
+                self.apply_op(r, cx);
+            }
             EditorMode::Full if self.cursor_on_heading_line() => {
                 let r = ops::demote(&self.doc, self.selection(), true);
                 self.apply_op(r, cx);
@@ -1275,6 +1332,9 @@ impl OrgEditor {
     fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
         if self.mode == EditorMode::SingleLine {
             cx.propagate();
+        } else if self.cursor_in_table() {
+            let r = aster_doc::table::next_cell(&self.doc, self.selection(), true);
+            self.apply_op(r, cx);
         } else if self.cursor_on_heading_line() {
             let r = ops::promote(&self.doc, self.selection(), true);
             self.apply_op(r, cx);

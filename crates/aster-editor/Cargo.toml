@@ -10,3 +10,4 @@ aster-doc.workspace = true
 aster-org.workspace = true
 gpui.workspace = true
 unicode-segmentation.workspace = true
+syntect.workspace = true

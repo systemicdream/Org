@@ -151,11 +151,9 @@ pub fn row_kinds(
 /// Rows whose line starts inside `range`.
 fn rows_in(line_starts: &[usize], text_len: usize, range: &Range<usize>) -> Range<usize> {
     let first = line_starts.partition_point(|&s| s < range.start);
-    let end = if range.end >= text_len {
-        line_starts.len()
-    } else {
-        line_starts.partition_point(|&s| s < range.end)
-    };
+    // A line starting exactly at the range end (e.g. the empty line after a final newline)
+    // is outside it.
+    let end = line_starts.partition_point(|&s| s < range.end.min(text_len));
     first..end.max(first)
 }
 

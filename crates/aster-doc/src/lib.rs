@@ -9,6 +9,7 @@ pub mod folds;
 mod history;
 pub mod ops;
 pub mod search;
+pub mod table;
 pub mod text;
 mod transaction;
 
