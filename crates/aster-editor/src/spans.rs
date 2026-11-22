@@ -4,7 +4,8 @@ use std::ops::Range;
 
 use aster_org::HeadingInfo;
 use gpui::{
-    FontStyle, FontWeight, Hsla, SharedString, StrikethroughStyle, TextRun, UnderlineStyle, px, rgb,
+    FontStyle, FontWeight, Hsla, SharedString, StrikethroughStyle, TextRun, UnderlineStyle, px,
+    rgb, rgba,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -87,11 +88,17 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
         if let Some(todo) = &h.todo
             && text[keyword_start..line_end].starts_with(todo.as_str())
         {
-            let c = if h.done { 0x16a34a } else { 0xdc2626 };
+            // Pills hint that these are clickable.
+            let (c, bg) = if h.done {
+                (0x16a34a, 0xdcfce7ff)
+            } else {
+                (0xdc2626, 0xfee2e2ff)
+            };
             spans.push((
                 keyword_start..keyword_start + todo.len(),
                 SpanStyle {
                     color: color(c),
+                    background: Some(rgba(bg).into()),
                     bold: true,
                     ..Default::default()
                 },
@@ -105,6 +112,7 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
                 start..start + p.len() + 3,
                 SpanStyle {
                     color: color(0xea580c),
+                    background: Some(rgba(0xffedd5ff).into()),
                     bold: true,
                     ..Default::default()
                 },
@@ -120,6 +128,7 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
                     start..h.range.start + trimmed.len(),
                     SpanStyle {
                         color: color(0x6b7280),
+                        background: Some(rgba(0xf3f4f6ff).into()),
                         ..Default::default()
                     },
                 ));
