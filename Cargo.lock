@@ -191,6 +191,7 @@ dependencies = [
  "aster-doc",
  "aster-editor",
  "aster-index",
+ "aster-ui",
  "chrono",
  "dirs 7.0.0",
  "futures",
@@ -216,6 +217,7 @@ version = "0.1.0"
 dependencies = [
  "aster-doc",
  "aster-org",
+ "aster-ui",
  "chrono",
  "gpui",
  "syntect",
@@ -236,6 +238,13 @@ name = "aster-org"
 version = "0.1.0"
 dependencies = [
  "orgize-ng",
+]
+
+[[package]]
+name = "aster-ui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
 ]
 
 [[package]]

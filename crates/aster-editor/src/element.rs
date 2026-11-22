@@ -13,10 +13,10 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, Corners, ElementId, ElementInputHandler, Entity, GlobalElementId,
     ImgResourceLoader, LayoutId, PaintQuad, Pixels, Point, RenderImage, Resource, ShapedLine,
-    Style, TextAlign, TextRun, Window, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    Style, TextAlign, TextRun, Window, fill, point, prelude::*, px, relative, size,
 };
 
-use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout, muted};
+use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout};
 
 /// Width of the fold-arrow gutter left of the text.
 fn gutter() -> Pixels {
@@ -246,7 +246,8 @@ impl Element for EditorElement {
                 .shape_line(s.into(), font_size, &[r], None)
         };
 
-        let selection_color = rgba(0x3b82f640);
+        let colors = editor.colors;
+        let selection_color = colors.selection;
         let sel = editor.selected_range.clone();
         let mut selections = Vec::new();
         let mut backgrounds = Vec::new();
@@ -273,7 +274,7 @@ impl Element for EditorElement {
                         point(origin.x - px(8.), origin.y),
                         point(bounds.right(), origin.y + r.text_height()),
                     ),
-                    rgb(0xf3f4f6),
+                    colors.subtle_secondary,
                 ));
             }
             if full && editor.row_kind(r.row).left_bar() {
@@ -282,7 +283,7 @@ impl Element for EditorElement {
                         point(origin.x - px(10.), origin.y),
                         point(origin.x - px(7.), origin.y + r.height()),
                     ),
-                    rgb(0xd1d5db),
+                    colors.stroke_control_strong,
                 ));
             }
 
@@ -335,9 +336,9 @@ impl Element for EditorElement {
                 {
                     let folded = editor.folds.is_folded(start);
                     let (glyph, color) = if folded {
-                        ("▸", rgb(0x6b7280).into())
+                        ("▸", colors.text_secondary)
                     } else {
-                        ("▾", rgb(0xd1d5db).into())
+                        ("▾", colors.text_disabled)
                     };
                     let shaped = shape_glyph(window, glyph, color, font_size);
                     let gy = bounds.top() + r.top + (lh - line_height) / 2.;
@@ -347,8 +348,12 @@ impl Element for EditorElement {
                         let end = w
                             .position_for_index(r.display.text.len(), lh)
                             .unwrap_or_default();
-                        let shaped =
-                            shape_glyph(window, " …", muted(), font_size * (lh / line_height));
+                        let shaped = shape_glyph(
+                            window,
+                            " …",
+                            colors.text_tertiary,
+                            font_size * (lh / line_height),
+                        );
                         glyphs.push((shaped, origin + point(end.x + px(2.), end.y), lh));
                     }
                 }
@@ -364,11 +369,11 @@ impl Element for EditorElement {
         {
             overlays.push(fill(
                 Bounds::from_corners(point(x, y - px(1.)), point(bounds.right(), y + px(1.))),
-                rgb(0x3b82f6),
+                colors.accent,
             ));
             overlays.push(fill(
                 Bounds::new(point(x - px(3.), y - px(3.)), size(px(6.), px(6.))),
-                rgb(0x3b82f6),
+                colors.accent,
             ));
         }
 
@@ -377,7 +382,7 @@ impl Element for EditorElement {
             && text.is_empty()
             && let Some(placeholder) = editor.placeholder.clone()
         {
-            let mut r = run(muted());
+            let mut r = run(colors.text_tertiary);
             r.len = placeholder.len();
             let shaped = window
                 .text_system()
@@ -400,7 +405,7 @@ impl Element for EditorElement {
             });
         let cursor_quad = cursor_rect
             .filter(|_| sel.is_empty() && editor.cursor_visible)
-            .map(|b| fill(b, rgb(0x3b82f6)));
+            .map(|b| fill(b, colors.accent));
 
         // Keep the cursor visible after keyboard navigation or edits.
         if full

@@ -3,7 +3,10 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use gpui::{Context, MouseButton, SharedString, div, prelude::*, px, rgb};
+use aster_ui::{ActiveTheme, components, ramp};
+use gpui::{Context, MouseButton, SharedString, div, prelude::*, px};
+
+use crate::agenda_view::Mode;
 
 use crate::workspace::Workspace;
 
@@ -72,31 +75,14 @@ pub fn build_tree(files: &[(String, PathBuf, bool)], expanded: &BTreeSet<String>
     out
 }
 
-fn section_label(text: &'static str) -> impl IntoElement {
-    div()
-        .px_3()
-        .pt_3()
-        .pb_1()
-        .text_size(px(11.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(rgb(0x9ca3af))
-        .child(text)
-}
-
 fn view_row(
     id: &'static str,
     label: &'static str,
+    selected: bool,
     cx: &mut Context<Workspace>,
     on_click: fn(&mut Workspace, &mut gpui::Window, &mut Context<Workspace>),
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .px_3()
-        .mx_1()
-        .rounded_md()
-        .cursor_pointer()
-        .text_color(rgb(0x374151))
-        .hover(|d| d.bg(rgb(0xe5e7eb)))
+    components::list_item(id, selected, cx)
         .child(label)
         .on_mouse_down(
             MouseButton::Left,
@@ -105,17 +91,29 @@ fn view_row(
 }
 
 impl Workspace {
+    /// The navigation pane (docs/DESIGN.md §7, §11): views, the file tree and tags, on the base
+    /// layer, with Fluent list rows and the accent selection indicator.
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_view = self.current_view(cx);
         let views = [
-            view_row("view-agenda", "📅  Agenda", cx, |ws, w, cx| {
-                ws.show_agenda_mode(crate::agenda_view::Mode::Day, w, cx)
-            })
+            view_row(
+                "view-agenda",
+                "Agenda",
+                matches!(current_view, Some(Mode::Day | Mode::Week | Mode::Search)),
+                cx,
+                |ws, w, cx| ws.show_agenda_mode(Mode::Day, w, cx),
+            )
             .into_any_element(),
-            view_row("view-todo", "☑  To-do list", cx, |ws, w, cx| {
-                ws.show_agenda_mode(crate::agenda_view::Mode::Todo, w, cx)
-            })
+            view_row(
+                "view-todo",
+                "To-do list",
+                current_view == Some(Mode::Todo),
+                cx,
+                |ws, w, cx| ws.show_agenda_mode(Mode::Todo, w, cx),
+            )
             .into_any_element(),
         ];
+        let colors = cx.theme().colors;
         let index = self.index.read(cx);
         let files: Vec<(String, PathBuf, bool)> = index
             .files()
@@ -128,102 +126,104 @@ impl Workspace {
             .as_ref()
             .and_then(|r| r.file_name())
             .map_or("Notes".to_string(), |n| n.to_string_lossy().into_owned());
-        let current = self.path.clone();
+        let current = self.path.clone().filter(|_| current_view.is_none());
 
-        let file_rows = rows.into_iter().enumerate().map(|(i, row)| {
-            let indent = px(12. + 14. * row.depth as f32);
-            let (icon, color, selected) = match &row.kind {
-                TreeKind::Folder { open, .. } => {
-                    (if *open { "▾" } else { "▸" }, rgb(0x6b7280), false)
-                }
-                TreeKind::File { path, conflict } => (
-                    if *conflict { "⚠" } else { " " },
-                    if *conflict {
-                        rgb(0xd97706)
-                    } else {
-                        rgb(0x374151)
-                    },
-                    current.as_ref() == Some(path),
-                ),
-            };
-            let name = match &row.kind {
-                TreeKind::File { .. } => row.name.trim_end_matches(".org").to_string(),
-                TreeKind::Folder { .. } => row.name.clone(),
-            };
-            let kind = row.kind.clone();
-            div()
-                .id(("tree-row", i))
-                .pl(indent)
-                .pr_2()
-                .mx_1()
-                .rounded_md()
-                .flex()
-                .gap_1()
-                .cursor_pointer()
-                .text_color(color)
-                .when(selected, |d| d.bg(rgb(0xe0e7ff)).text_color(rgb(0x1e3a8a)))
-                .when(!selected, |d| d.hover(|d| d.bg(rgb(0xe5e7eb))))
-                .child(div().w(px(12.)).text_color(rgb(0x9ca3af)).child(icon))
-                .child(div().overflow_hidden().whitespace_nowrap().child(name))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| match &kind {
-                        TreeKind::Folder { rel, .. } => {
-                            if !this.expanded.remove(rel) {
-                                this.expanded.insert(rel.clone());
+        let file_rows: Vec<_> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let (chevron, selected, color) = match &row.kind {
+                    TreeKind::Folder { open, .. } => {
+                        (if *open { "⌄" } else { "›" }, false, colors.text_primary)
+                    }
+                    TreeKind::File { path, conflict } => (
+                        "",
+                        current.as_ref() == Some(path),
+                        if *conflict {
+                            colors.caution
+                        } else {
+                            colors.text_primary
+                        },
+                    ),
+                };
+                let conflict = matches!(row.kind, TreeKind::File { conflict: true, .. });
+                let name = match &row.kind {
+                    TreeKind::File { .. } => row.name.trim_end_matches(".org").to_string(),
+                    TreeKind::Folder { .. } => row.name.clone(),
+                };
+                let kind = row.kind.clone();
+                components::list_item(("tree-row", i), selected, cx)
+                    .pl(px(12. + 16. * row.depth as f32))
+                    .text_color(color)
+                    .child(
+                        div()
+                            .w(px(12.))
+                            .flex_shrink_0()
+                            .text_color(colors.text_secondary)
+                            .child(chevron),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(name),
+                    )
+                    .when(conflict, |d| {
+                        d.child(components::caption("conflict", cx).text_color(colors.caution))
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| match &kind {
+                            TreeKind::Folder { rel, .. } => {
+                                if !this.expanded.remove(rel) {
+                                    this.expanded.insert(rel.clone());
+                                }
+                                cx.notify();
                             }
-                            cx.notify();
-                        }
-                        TreeKind::File { path, .. } => {
-                            this.open_path(path.clone(), window, cx);
-                        }
-                    }),
-                )
-        });
+                            TreeKind::File { path, .. } => {
+                                this.open_path(path.clone(), window, cx);
+                            }
+                        }),
+                    )
+            })
+            .collect();
 
-        let tag_rows = tags.into_iter().enumerate().map(|(i, (tag, count))| {
-            let t = tag.clone();
-            div()
-                .id(("tag-row", i))
-                .px_3()
-                .mx_1()
-                .rounded_md()
-                .flex()
-                .justify_between()
-                .cursor_pointer()
-                .hover(|d| d.bg(rgb(0xe5e7eb)))
-                .child(div().text_color(rgb(0x4b5563)).child(format!("#{tag}")))
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(0x9ca3af))
-                        .child(count.to_string()),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| this.show_tag(&t, window, cx)),
-                )
-        });
+        let tag_rows: Vec<_> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, (tag, count))| {
+                let t = tag.clone();
+                components::list_item(("tag-row", i), false, cx)
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_color(colors.text_secondary)
+                            .child(format!("#{tag}")),
+                    )
+                    .child(components::caption(count.to_string(), cx))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| this.show_tag(&t, window, cx)),
+                    )
+            })
+            .collect();
 
         let empty = index.is_empty();
+        let has_tags = !tags.is_empty();
         div()
             .id("sidebar")
-            .w(px(240.))
+            .w(px(260.))
             .h_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .bg(rgb(0xf9fafb))
-            .border_r_1()
-            .border_color(rgb(0xe5e7eb))
-            .text_size(px(14.))
-            .line_height(px(24.))
+            .text_size(ramp::BODY.size)
+            .line_height(ramp::BODY.line_height)
             .child(
                 div()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(0xe5e7eb))
+                    .px_4()
+                    .pb_1()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -234,24 +234,24 @@ impl Workspace {
                     .id("sidebar-scroll")
                     .flex_1()
                     .overflow_y_scroll()
+                    .px_1()
                     .pb_4()
-                    .child(section_label("VIEWS"))
+                    .child(components::section_header("Views", cx))
                     .children(views)
-                    .child(section_label("FILES"))
+                    .child(components::section_header("Files", cx))
                     .when(empty, |d| {
-                        d.child(
-                            div()
-                                .px_3()
-                                .text_color(rgb(0x9ca3af))
-                                .child(if self.scanning {
-                                    "Loading…"
-                                } else {
-                                    "No .org files"
-                                }),
-                        )
+                        d.child(div().px_3().text_color(colors.text_tertiary).child(
+                            if self.scanning {
+                                "Loading…"
+                            } else {
+                                "No .org files"
+                            },
+                        ))
                     })
                     .children(file_rows)
-                    .when(!index.tags().is_empty(), |d| d.child(section_label("TAGS")))
+                    .when(has_tags, |d| {
+                        d.child(components::section_header("Tags", cx))
+                    })
                     .children(tag_rows),
             )
     }

@@ -13,6 +13,7 @@ aster-doc = { path = "crates/aster-doc" }
 aster-editor = { path = "crates/aster-editor" }
 aster-index = { path = "crates/aster-index" }
 aster-agenda = { path = "crates/aster-agenda" }
+aster-ui = { path = "crates/aster-ui" }
 
 # GPUI moves fast; pin exactly and upgrade deliberately.
 # Features:

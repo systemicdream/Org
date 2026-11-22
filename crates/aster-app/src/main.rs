@@ -15,8 +15,8 @@ mod workspace;
 use std::path::PathBuf;
 
 use gpui::{
-    App, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem, SystemMenuType, WindowBounds,
-    WindowOptions, actions, prelude::*, px, size,
+    App, Application, Bounds, Focusable, KeyBinding, Menu, MenuItem, SystemMenuType,
+    TitlebarOptions, WindowBounds, WindowOptions, actions, point, prelude::*, px, size,
 };
 
 use session::Session;
@@ -158,6 +158,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     Application::new().run(move |cx: &mut App| {
+        aster_ui::init(cx.window_appearance(), cx);
         aster_editor::bind_keys(cx);
         agenda_view::bind_keys(cx);
         let mut keys = vec![
@@ -191,6 +192,12 @@ fn main() -> anyhow::Result<()> {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // macOS: draw our own title area (docs/DESIGN.md §11).
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Aster".into()),
+                        appears_transparent: cfg!(target_os = "macos"),
+                        traffic_light_position: Some(point(px(14.), px(13.))),
+                    }),
                     ..Default::default()
                 },
                 |window, cx| cx.new(|cx| Workspace::new(text, file, root, window, cx)),

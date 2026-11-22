@@ -342,6 +342,23 @@ Deferred: a system-wide capture hotkey (GPUI has no global shortcuts; needs a sm
 helper), configurable capture templates and targets, clocking/effort sums in the agenda, habits,
 `CLOSED:` stamping when marking done, block agenda/custom views.
 
+
+### Phase 7 task list
+
+- [x] Design guidelines: Fluent (early Windows 11) adapted for macOS/Linux ([DESIGN.md](DESIGN.md))
+- [x] `aster-ui`: theme tokens (light/dark), type ramp, radii, elevation, WCAG contrast test
+- [x] Shared components: flyout, dialog, list item with selection indicator, text box, selector
+      tab, buttons, pills, captions
+- [x] Every view uses tokens (no hard-coded colors); follows the system appearance live;
+      `ASTER_APPEARANCE=light|dark` override
+- [x] Layout: base layer + rounded content layer; transparent title bar on macOS
+- [ ] Fluent UI System Icons (bundled SVG)
+- [ ] Settings (appearance, font size, capture targets/templates, keymap) with a settings page
+- [ ] First run: choose/create a notes folder, welcome notebook, starter templates, empty states
+- [ ] Optional Emacs keymap
+- [ ] Create / rename / delete files from the sidebar
+- [ ] Hands-on test on macOS and Linux
+
 ---
 
 ## 10. Risks

@@ -26,12 +26,13 @@ use aster_doc::display::RowDisplay;
 use aster_doc::folds::Folds;
 use aster_doc::{Document, EditOrigin, Selection, ops, search, text};
 use aster_org::{DecoKind, Decoration};
+use aster_ui::ActiveTheme;
 use element::EditorElement;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Font,
     Hsla, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     ScrollHandle, SharedString, Subscription, Task, TextRun, Window, WrappedLine, actions, div,
-    point, prelude::*, px, rgb,
+    point, prelude::*, px,
 };
 use popup::{NavKey, Popup};
 use preview::RowKind;
@@ -357,6 +358,9 @@ struct SearchState {
 }
 
 pub struct OrgEditor {
+    /// Theme colors (docs/DESIGN.md), updated when the theme changes.
+    colors: aster_ui::Colors,
+    dark: bool,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
     mode: EditorMode,
@@ -445,8 +449,18 @@ impl OrgEditor {
                 this.cursor_visible = true;
                 cx.notify();
             }),
+            // Re-style when the theme (light/dark) changes.
+            cx.observe_global::<aster_ui::Theme>(|this, cx| {
+                this.colors = cx.theme().colors;
+                this.dark = cx.theme().is_dark();
+                this.highlight_cache.clear();
+                this.recompute_lines();
+                cx.notify();
+            }),
         ];
         let mut this = Self {
+            colors: cx.theme().colors,
+            dark: cx.theme().is_dark(),
             focus_handle,
             scroll_handle: ScrollHandle::new(),
             mode,
@@ -761,7 +775,7 @@ impl OrgEditor {
             })
             .collect();
         self.org_spans = if self.mode == EditorMode::Full {
-            let mut s = spans::style_spans(self.doc.headings(), self.doc.text());
+            let mut s = spans::style_spans(self.doc.headings(), self.doc.text(), &self.colors);
             s.extend(self.code_spans());
             // Stable: spans starting at the same offset keep their override order.
             s.sort_by_key(|(r, _)| r.start);
@@ -854,13 +868,12 @@ impl OrgEditor {
             };
             let code = &self.doc.text()[d.range.clone()];
             let mut h = DefaultHasher::new();
-            (lang, code).hash(&mut h);
+            (lang, code, self.dark).hash(&mut h);
             let key = h.finish();
-            let spans = self
-                .highlight_cache
-                .get(&key)
-                .cloned()
-                .unwrap_or_else(|| std::rc::Rc::new(highlight::highlight(lang, code)));
+            let spans =
+                self.highlight_cache.get(&key).cloned().unwrap_or_else(|| {
+                    std::rc::Rc::new(highlight::highlight(lang, code, self.dark))
+                });
             out.extend(
                 spans
                     .iter()
@@ -1075,7 +1088,10 @@ impl OrgEditor {
         let range = display.line.clone();
         let to_disp = |r: &Range<usize>| display.display_range(r.clone());
         let in_row = |r: &Range<usize>| r.start >= range.start && r.start <= range.end;
-        let mut out: spans::Spans = vec![(0..display.text.len(), self.row_kind(row).base_style())];
+        let mut out: spans::Spans = vec![(
+            0..display.text.len(),
+            self.row_kind(row).base_style(&self.colors),
+        )];
 
         let i = self
             .org_spans
@@ -1088,7 +1104,7 @@ impl OrgEditor {
         );
         if self.mode == EditorMode::Full {
             for d in self.inline_decorations(&range) {
-                if let Some(st) = preview::inline_style(&d.kind) {
+                if let Some(st) = preview::inline_style(&d.kind, &self.colors) {
                     out.push((to_disp(&d.range), st));
                 }
             }
@@ -1101,14 +1117,14 @@ impl OrgEditor {
                 .take_while(|(_, m)| in_row(m))
             {
                 let bg = if Some(i + j) == search.active {
-                    0xfb923c99
+                    self.colors.selection
                 } else {
-                    0xfde04780
+                    self.colors.accent_subtle
                 };
                 out.push((
                     to_disp(m),
                     spans::SpanStyle {
-                        background: Some(gpui::rgba(bg).into()),
+                        background: Some(bg),
                         ..Default::default()
                     },
                 ));
@@ -2366,11 +2382,6 @@ impl Focusable for OrgEditor {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
-}
-
-/// Muted color for UI chrome inside the editor (fold arrows, ellipses, placeholders).
-fn muted() -> Hsla {
-    rgb(0x9ca3af).into()
 }
 
 /// Whether `#+STARTUP:` asks for the file to open folded (`overview` / `fold`).

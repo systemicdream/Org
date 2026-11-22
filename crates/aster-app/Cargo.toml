@@ -22,3 +22,4 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
+aster-ui.workspace = true

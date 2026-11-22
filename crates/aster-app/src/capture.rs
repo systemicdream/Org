@@ -1,9 +1,10 @@
 //! Capture: jot a task, note, or journal entry without leaving what you're doing.
 
 use aster_editor::{EditorEvent, OrgEditor};
+use aster_ui::{components, ramp};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Subscription, Window,
-    div, prelude::*, px, rgb,
+    div, prelude::*, px,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,42 +80,26 @@ impl CaptureDialog {
 
 impl Render for CaptureDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = Template::ALL.into_iter().map(|t| {
-            let active = t == self.template;
-            div()
-                .id(t.label())
-                .px_3()
-                .rounded_md()
-                .cursor_pointer()
-                .when(active, |d| d.bg(rgb(0xe0e7ff)).text_color(rgb(0x1e3a8a)))
-                .when(!active, |d| {
-                    d.text_color(rgb(0x4b5563)).hover(|d| d.bg(rgb(0xf3f4f6)))
-                })
-                .child(t.label())
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.template = t;
-                        window.focus(&this.input.focus_handle(cx));
-                        cx.notify();
-                    }),
-                )
-        });
-        div()
-            .occlude()
+        let tabs: Vec<_> = Template::ALL
+            .into_iter()
+            .map(|t| {
+                components::selector_tab(t.label(), t.label(), t == self.template, cx)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.template = t;
+                            window.focus(&this.input.focus_handle(cx));
+                            cx.notify();
+                        }),
+                    )
+            })
+            .collect();
+        components::dialog(cx)
             .w(px(560.))
-            .p_3()
+            .p_4()
             .flex()
             .flex_col()
-            .gap_2()
-            .bg(rgb(0xffffff))
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .rounded_lg()
-            .shadow_lg()
-            .text_size(px(14.))
-            .line_height(px(24.))
-            .text_color(rgb(0x1f2937))
+            .gap_3()
             .child(
                 div()
                     .flex()
@@ -122,30 +107,22 @@ impl Render for CaptureDialog {
                     .gap_1()
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .mr_2()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(ramp::SUBTITLE.size)
+                            .line_height(ramp::SUBTITLE.line_height)
+                            .mr_3()
                             .child("Capture"),
                     )
                     .children(tabs),
             )
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(0xd1d5db))
-                    .child(self.input.clone()),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(0x9ca3af))
-                    .child(format!(
-                        "{} · Enter to save · ↑↓ change type · Esc cancel",
-                        self.template.hint()
-                    )),
-            )
+            .child(components::text_box(true, cx).child(self.input.clone()))
+            .child(components::caption(
+                format!(
+                    "{} · Enter to save · ↑↓ change type · Esc cancel",
+                    self.template.hint()
+                ),
+                cx,
+            ))
     }
 }
 

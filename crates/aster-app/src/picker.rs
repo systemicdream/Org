@@ -5,9 +5,10 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use aster_editor::{EditorEvent, OrgEditor};
+use aster_ui::{ActiveTheme, components};
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, SharedString,
-    Subscription, Window, div, prelude::*, px, rgb, rgba,
+    Subscription, Window, div, prelude::*, px,
 };
 
 /// What choosing an item does.
@@ -113,7 +114,9 @@ impl Picker {
 fn label_with_highlight(
     label: &SharedString,
     highlight: &Option<Range<usize>>,
+    cx: &App,
 ) -> gpui::AnyElement {
+    let colors = cx.theme().colors;
     match highlight {
         Some(r)
             if r.end <= label.len()
@@ -127,8 +130,10 @@ fn label_with_highlight(
                 .child(label[..r.start].to_string())
                 .child(
                     div()
-                        .bg(rgba(0xfde04799))
-                        .rounded_sm()
+                        .bg(colors.accent_subtle)
+                        .text_color(colors.accent)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .rounded(aster_ui::RADIUS_CONTROL)
                         .child(label[r.clone()].to_string()),
                 )
                 .child(label[r.end..].to_string())
@@ -144,48 +149,32 @@ fn label_with_highlight(
 
 impl Render for Picker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
         let has_query = !self.query.read(cx).text().is_empty();
-        let rows = self
+        let rows: Vec<_> = self
             .items
             .iter()
             .take(MAX_ROWS)
             .enumerate()
             .map(|(i, (item, _))| {
-                let selected = i == self.selected;
-                div()
-                    .id(("picker-item", i))
-                    .mx_1()
-                    .px_3()
-                    .py_0p5()
-                    .rounded_md()
-                    .flex()
-                    .items_center()
+                components::list_item(("picker-item", i), i == self.selected, cx)
+                    .py_1()
                     .gap_4()
-                    .cursor_pointer()
-                    .when(selected, |s| s.bg(rgb(0xe0e7ff)))
-                    .when(!selected, |s| s.hover(|s| s.bg(rgb(0xf3f4f6))))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(label_with_highlight(&item.label, &item.highlight))
+                            .child(label_with_highlight(&item.label, &item.highlight, cx))
                             .children(item.detail.clone().map(|d| {
-                                div()
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .text_color(rgb(0x6b7280))
+                                components::caption(d, cx)
+                                    .text_color(colors.text_secondary)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .child(d)
                             })),
                     )
-                    .children(
-                        item.hint
-                            .clone()
-                            .map(|h| div().text_color(rgb(0x6b7280)).child(h)),
-                    )
+                    .children(item.hint.clone().map(|h| components::caption(h, cx)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -193,50 +182,37 @@ impl Render for Picker {
                             this.confirm(i, cx);
                         }),
                     )
-            });
+            })
+            .collect();
         let more = self.items.len().saturating_sub(MAX_ROWS);
-        div()
-            .occlude()
+        components::dialog(cx)
             .w(px(600.))
-            .bg(rgb(0xffffff))
-            .border_1()
-            .border_color(rgb(0xe5e7eb))
-            .rounded_lg()
-            .shadow_lg()
-            .text_size(px(14.))
-            .line_height(px(24.))
-            .text_color(rgb(0x1f2937))
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
             .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(0xe5e7eb))
+                components::text_box(true, cx)
+                    .mb_1()
                     .child(self.query.clone()),
             )
-            .child(
-                div()
-                    .py_1()
-                    .children(rows)
-                    .when(self.items.is_empty() && has_query, |d| {
-                        d.child(
-                            div()
-                                .px_4()
-                                .py_1()
-                                .text_color(rgb(0x9ca3af))
-                                .child("No results"),
-                        )
-                    })
-                    .when(more > 0, |d| {
-                        d.child(
-                            div()
-                                .px_4()
-                                .text_size(px(12.))
-                                .text_color(rgb(0x9ca3af))
-                                .child(format!("{more} more — keep typing to narrow down")),
-                        )
-                    }),
-            )
+            .children(rows)
+            .when(self.items.is_empty() && has_query, |d| {
+                d.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_color(colors.text_tertiary)
+                        .child("No results"),
+                )
+            })
+            .when(more > 0, |d| {
+                d.child(
+                    components::caption(format!("{more} more — keep typing to narrow down"), cx)
+                        .px_3()
+                        .py_1(),
+                )
+            })
     }
 }
 

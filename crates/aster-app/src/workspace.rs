@@ -11,7 +11,7 @@ use aster_index::{Index, fuzzy_score};
 use futures::StreamExt;
 use gpui::{
     Action, Context, Entity, Focusable, PathPromptOptions, PromptLevel, SharedString, Subscription,
-    Task, Window, div, prelude::*, px, rgb,
+    Task, Window, div, prelude::*, px,
 };
 
 use crate::agenda_view::{AgendaEvent, AgendaView, Mode as AgendaMode};
@@ -22,6 +22,7 @@ use crate::watch::{self, FolderWatcher};
 use crate::*;
 use aster_doc::ops::OpResult;
 use aster_doc::{Document, Selection, Transaction, dates, meta};
+use aster_ui::{ActiveTheme, ramp};
 
 pub const SAMPLE: &str = include_str!("../assets/welcome.org");
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1000);
@@ -91,6 +92,13 @@ impl Workspace {
             toast_task: None,
         };
         window.set_window_title(&ws.title());
+        // Follow the system's light/dark setting.
+        cx.observe_window_appearance(window, |_, window, cx| {
+            if aster_ui::set_appearance(window.appearance(), cx) {
+                window.refresh();
+            }
+        })
+        .detach();
         ws.sync_base_dir(cx);
         if let Some(root) = root {
             ws.set_root(root, window, cx);
@@ -230,6 +238,14 @@ impl Workspace {
     }
 
     // ---- agenda ---------------------------------------------------------------------------
+
+    /// The agenda mode on screen, if the agenda is showing.
+    pub(crate) fn current_view(&self, cx: &gpui::App) -> Option<AgendaMode> {
+        self.agenda
+            .as_ref()
+            .filter(|_| self.show_agenda)
+            .map(|(v, _)| v.read(cx).mode)
+    }
 
     pub(crate) fn show_agenda_mode(
         &mut self,
@@ -1128,8 +1144,17 @@ impl Workspace {
             .commands
             .iter()
             .map(|(name, action)| {
+                // As the editor would resolve it; if it isn't on screen (agenda showing), look
+                // in its key context, then globally.
                 let hint = window
                     .highest_precedence_binding_for_action_in(action.as_ref(), &target)
+                    .or_else(|| {
+                        window.highest_precedence_binding_for_action_in_context(
+                            action.as_ref(),
+                            gpui::KeyContext::parse("OrgEditor").unwrap_or_default(),
+                        )
+                    })
+                    .or_else(|| window.highest_precedence_binding_for_action(action.as_ref()))
                     .map(|b| format_keystrokes(&b).into());
                 (*name, hint)
             })
@@ -1350,20 +1375,52 @@ fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Height of the custom title area on macOS (the traffic lights sit in it).
+const TITLE_BAR_HEIGHT: f32 = 38.;
+
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
         let sidebar = if self.sidebar_open && self.root.is_some() {
             Some(self.render_sidebar(cx).into_any_element())
         } else {
             None
         };
+        let has_sidebar = sidebar.is_some();
+        // macOS: a transparent title bar over the base layer (docs/DESIGN.md §11). Dragging it
+        // moves the window; it shows the document name.
+        let title_bar = cfg!(target_os = "macos").then(|| {
+            div()
+                .id("title-bar")
+                .h(px(TITLE_BAR_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(ramp::BODY.size)
+                .text_color(colors.text_secondary)
+                .child(window.window_title())
+                .on_mouse_down(gpui::MouseButton::Left, |e, window, _| {
+                    if e.click_count == 2 {
+                        window.zoom_window();
+                    } else {
+                        window.start_window_move();
+                    }
+                })
+        });
+        let main = match self.agenda.as_ref().filter(|_| self.show_agenda) {
+            Some((agenda, _)) => agenda.clone().into_any_element(),
+            None => self.editor.clone().into_any_element(),
+        };
+
         div()
             .size_full()
             .flex()
-            .bg(rgb(0xffffff))
-            .text_color(rgb(0x1f2937))
-            .text_size(px(16.))
-            .line_height(px(26.))
+            .flex_col()
+            .bg(colors.base)
+            .text_color(colors.text_primary)
+            .text_size(ramp::EDITOR.size)
+            .line_height(ramp::EDITOR.line_height)
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::open))
@@ -1382,21 +1439,32 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::capture))
             .on_action(cx.listener(Self::refile))
             .on_action(cx.listener(Self::archive))
-            .children(sidebar)
+            .children(title_bar)
             .child(
                 div()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .min_h_0()
                     .flex()
-                    .flex_col()
-                    .children(self.find_bar.clone().filter(|_| !self.show_agenda))
-                    .child(div().flex_1().min_h_0().map(|d| {
-                        match self.agenda.as_ref().filter(|_| self.show_agenda) {
-                            Some((agenda, _)) => d.child(agenda.clone()),
-                            None => d.child(self.editor.clone()),
-                        }
-                    })),
+                    .children(sidebar)
+                    // The content layer: a card inset into the base, rounded where it meets
+                    // the sidebar and title area.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .bg(colors.layer)
+                            .border_t_1()
+                            .border_color(colors.stroke_surface)
+                            .when(has_sidebar, |d| {
+                                d.border_l_1().rounded_tl(aster_ui::RADIUS_OVERLAY)
+                            })
+                            .children(self.find_bar.clone().filter(|_| !self.show_agenda))
+                            .child(div().flex_1().min_h_0().child(main)),
+                    ),
             )
             .children(self.capture.as_ref().map(|(c, _)| {
                 gpui::deferred(
@@ -1412,25 +1480,35 @@ impl Render for Workspace {
                 .with_priority(2)
             }))
             .children(self.toast.clone().map(|(msg, error)| {
-                gpui::deferred(
-                    div()
-                        .absolute()
-                        .bottom(px(16.))
-                        .right(px(16.))
-                        .max_w(px(420.))
-                        .px_3()
-                        .py_2()
-                        .rounded_lg()
-                        .shadow_lg()
-                        .text_size(px(13.))
-                        .line_height(px(20.))
-                        .bg(if error { rgb(0xfef2f2) } else { rgb(0x111827) })
-                        .text_color(if error { rgb(0x991b1b) } else { rgb(0xf9fafb) })
-                        .border_1()
-                        .border_color(if error { rgb(0xfecaca) } else { rgb(0x111827) })
-                        .child(msg),
-                )
-                .with_priority(3)
+                // InfoBar-style toast (docs/DESIGN.md §7).
+                let theme = cx.theme();
+                let surface = div()
+                    .absolute()
+                    .bottom(px(16.))
+                    .right(px(16.))
+                    .max_w(px(420.))
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .gap_2()
+                    .rounded(aster_ui::RADIUS_OVERLAY)
+                    .shadow(theme.shadow(aster_ui::Elevation::Tooltip))
+                    .border_1()
+                    .border_color(colors.stroke_surface)
+                    .text_size(ramp::BODY.size)
+                    .line_height(ramp::BODY.line_height);
+                let surface = if error {
+                    surface
+                        .bg(colors.critical_bg)
+                        .child(div().text_color(colors.critical).child("⛔"))
+                        .child(div().text_color(colors.text_primary).child(msg))
+                } else {
+                    surface
+                        .bg(colors.flyout)
+                        .child(div().text_color(colors.accent).child("✓"))
+                        .child(div().text_color(colors.text_primary).child(msg))
+                };
+                gpui::deferred(surface).with_priority(3)
             }))
             .children(self.picker.as_ref().map(|(p, _)| {
                 gpui::deferred(
