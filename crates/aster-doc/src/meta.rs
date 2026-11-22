@@ -358,6 +358,126 @@ pub fn move_subtree_to(doc: &Document, start: usize, target: DropTarget) -> Opti
     })
 }
 
+/// The subtree at `start` as text with its root moved to `level`, ending with a newline.
+pub fn subtree_text(doc: &Document, start: usize, level: usize) -> Option<String> {
+    let h = heading(doc, start)?;
+    let text = doc.text();
+    let eol = line_ending(text);
+    let delta = level as isize - h.level as isize;
+    let mut chunk = String::new();
+    for line in text[h.range.clone()].split_inclusive('\n') {
+        let stars = line.bytes().take_while(|&b| b == b'*').count();
+        if stars > 0 && line[stars..].starts_with(' ') {
+            chunk.push_str(&"*".repeat((stars as isize + delta).max(1) as usize));
+            chunk.push_str(&line[stars..]);
+        } else {
+            chunk.push_str(line);
+        }
+    }
+    if !chunk.ends_with('\n') {
+        chunk.push_str(eol);
+    }
+    Some(chunk)
+}
+
+/// Remove the subtree at `start`, leaving the cursor where it was.
+pub fn remove_subtree(doc: &Document, start: usize) -> Option<OpResult> {
+    let h = heading(doc, start)?;
+    let text = doc.text();
+    let mut range = h.range.clone();
+    // At the end of a file without a trailing newline, also take the newline before it.
+    if range.end == text.len() && !text.ends_with('\n') && range.start > 0 {
+        range.start -= if text[..range.start].ends_with("\r\n") {
+            2
+        } else {
+            1
+        };
+    }
+    let at = range.start.min(text.len() - range.len());
+    Some(OpResult {
+        tx: Transaction::replace(range, ""),
+        selection: Selection::cursor(at),
+    })
+}
+
+/// Insert `chunk` (a subtree ending with a newline) at the end of the subtree of `parent`, or
+/// at the end of the document when `parent` is `None`.
+pub fn insert_subtree(doc: &Document, parent: Option<usize>, chunk: &str) -> Option<OpResult> {
+    let text = doc.text();
+    let at = match parent {
+        Some(p) => heading(doc, p)?.range.end,
+        None => text.len(),
+    };
+    let eol = line_ending(text);
+    let needs_newline = at > 0 && !text[..at].ends_with('\n');
+    let insert = if needs_newline {
+        format!("{eol}{chunk}")
+    } else {
+        chunk.to_string()
+    };
+    let lead = if needs_newline { eol.len() } else { 0 };
+    Some(OpResult {
+        tx: Transaction::replace(at..at, insert),
+        selection: Selection::cursor(at + lead),
+    })
+}
+
+/// Add properties to a subtree chunk's property drawer (creating it after the heading line
+/// and any planning line).
+pub fn with_properties(chunk: &str, props: &[(&str, String)]) -> String {
+    let eol = if chunk.contains("\r\n") { "\r\n" } else { "\n" };
+    let lines: Vec<&str> = chunk.split_inclusive('\n').collect();
+    let mut i = 1;
+    if lines.get(i).is_some_and(|l| {
+        let t = l.trim_start();
+        t.starts_with("SCHEDULED:") || t.starts_with("DEADLINE:") || t.starts_with("CLOSED:")
+    }) {
+        i += 1;
+    }
+    let new_props: String = props
+        .iter()
+        .map(|(k, v)| format!(":{k}: {v}{eol}"))
+        .collect();
+    let mut out = String::new();
+    if lines
+        .get(i)
+        .is_some_and(|l| l.trim().eq_ignore_ascii_case(":properties:"))
+    {
+        // Existing drawer: add before its :END:.
+        let end = lines[i..]
+            .iter()
+            .position(|l| l.trim().eq_ignore_ascii_case(":end:"))
+            .map(|p| i + p);
+        match end {
+            Some(end) => {
+                out.extend(lines[..end].iter().copied());
+                out.push_str(&new_props);
+                out.extend(lines[end..].iter().copied());
+                return out;
+            }
+            None => return chunk.to_string(),
+        }
+    }
+    out.extend(lines[..i.min(lines.len())].iter().copied());
+    out.push_str(&format!(":PROPERTIES:{eol}{new_props}:END:{eol}"));
+    out.extend(lines[i.min(lines.len())..].iter().copied());
+    out
+}
+
+/// Titles of the ancestors of the heading at `start`, outermost first.
+pub fn outline_path(doc: &Document, start: usize) -> Vec<String> {
+    let Some(h) = heading(doc, start) else {
+        return Vec::new();
+    };
+    doc.headings()
+        .iter()
+        .filter(|a| {
+            a.range.start < h.range.start && a.range.end >= h.range.end && a.level < h.level
+        })
+        .map(|a| a.title.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +634,38 @@ mod tests {
                 }
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn subtree_extract_insert_and_properties() {
+        let doc = Document::new("* a\n** a1\nbody\n* b");
+        let a1 = start_of(&doc, "a1");
+        assert_eq!(subtree_text(&doc, a1, 1).unwrap(), "* a1\nbody\n");
+        let b = start_of(&doc, "b");
+        assert_eq!(subtree_text(&doc, b, 2).unwrap(), "** b\n");
+        assert_eq!(apply(&doc, remove_subtree(&doc, b)), "* a\n** a1\nbody");
+        assert_eq!(apply(&doc, remove_subtree(&doc, a1)), "* a\n* b");
+        // Insert under a parent (at the end of its subtree) or at the end of the file.
+        let a = start_of(&doc, "a");
+        assert_eq!(
+            apply(&doc, insert_subtree(&doc, Some(a), "** new\n")),
+            "* a\n** a1\nbody\n** new\n* b"
+        );
+        assert_eq!(
+            apply(&doc, insert_subtree(&doc, None, "* new\n")),
+            "* a\n** a1\nbody\n* b\n* new\n"
+        );
+        assert_eq!(outline_path(&doc, a1), ["a"]);
+
+        let p = |c: &str| with_properties(c, &[("ARCHIVE_TIME", "[2026-11-22 Sun 10:00]".into())]);
+        assert_eq!(
+            p("* x\nbody\n"),
+            "* x\n:PROPERTIES:\n:ARCHIVE_TIME: [2026-11-22 Sun 10:00]\n:END:\nbody\n"
+        );
+        assert_eq!(
+            p("* x\nSCHEDULED: <2026-11-22 Sun>\n:PROPERTIES:\n:ID: 1\n:END:\n"),
+            "* x\nSCHEDULED: <2026-11-22 Sun>\n:PROPERTIES:\n:ID: 1\n:ARCHIVE_TIME: [2026-11-22 Sun 10:00]\n:END:\n"
         );
     }
 
