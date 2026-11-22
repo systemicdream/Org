@@ -3,14 +3,53 @@
 use std::ops::Range;
 
 use aster_org::HeadingInfo;
-use gpui::{FontWeight, Hsla, TextRun, UnderlineStyle, px, rgb};
+use gpui::{
+    FontStyle, FontWeight, Hsla, SharedString, StrikethroughStyle, TextRun, UnderlineStyle, px, rgb,
+};
 
 #[derive(Clone, Copy, Default)]
 pub struct SpanStyle {
     pub color: Option<Hsla>,
     pub background: Option<Hsla>,
     pub bold: bool,
+    pub italic: bool,
     pub underline: bool,
+    pub strike: bool,
+    pub mono: bool,
+}
+
+impl SpanStyle {
+    /// Apply this style on top of `run`.
+    pub fn apply(&self, run: &mut TextRun, mono_family: &SharedString) {
+        if let Some(c) = self.color {
+            run.color = c;
+        }
+        if let Some(bg) = self.background {
+            run.background_color = Some(bg);
+        }
+        if self.bold {
+            run.font.weight = FontWeight::BOLD;
+        }
+        if self.italic {
+            run.font.style = FontStyle::Italic;
+        }
+        if self.mono {
+            run.font.family = mono_family.clone();
+        }
+        if self.underline {
+            run.underline = Some(UnderlineStyle {
+                color: Some(run.color),
+                thickness: px(1.),
+                wavy: false,
+            });
+        }
+        if self.strike {
+            run.strikethrough = Some(StrikethroughStyle {
+                color: Some(run.color),
+                thickness: px(1.),
+            });
+        }
+    }
 }
 
 pub type Spans = Vec<(Range<usize>, SpanStyle)>;
@@ -90,8 +129,14 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
     spans
 }
 
-/// Split `range` into text runs (lengths relative to `range.start`), applying overlapping spans.
-pub fn runs_for_range(base: &TextRun, spans: &Spans, range: Range<usize>) -> Vec<TextRun> {
+/// Split `range` into text runs (lengths relative to `range.start`), applying overlapping spans
+/// in order.
+pub fn runs_for_range(
+    base: &TextRun,
+    spans: &Spans,
+    range: Range<usize>,
+    mono_family: &SharedString,
+) -> Vec<TextRun> {
     let mut cuts = vec![range.start, range.end];
     for (r, _) in spans {
         for p in [r.start, r.end] {
@@ -112,22 +157,7 @@ pub fn runs_for_range(base: &TextRun, spans: &Spans, range: Range<usize>) -> Vec
         };
         for (r, style) in spans {
             if r.start <= a && b <= r.end {
-                if let Some(c) = style.color {
-                    run.color = c;
-                }
-                if let Some(bg) = style.background {
-                    run.background_color = Some(bg);
-                }
-                if style.bold {
-                    run.font.weight = FontWeight::BOLD;
-                }
-                if style.underline {
-                    run.underline = Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.),
-                        wavy: false,
-                    });
-                }
+                style.apply(&mut run, mono_family);
             }
         }
         runs.push(run);

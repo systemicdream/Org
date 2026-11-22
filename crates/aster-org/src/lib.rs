@@ -6,10 +6,14 @@
 //! Invariant: an [`OrgTree`] is *lossless* — [`OrgTree::text`] always returns exactly the bytes
 //! that were parsed, plus any edits applied through [`OrgTree::replace_range`].
 
+mod decorations;
+
 use std::ops::Range;
 
 use orgize::rowan::ast::AstNode;
 use orgize::{Org, ParseConfig, ast::Headline};
+
+pub use decorations::{BlockKind, DecoKind, Decoration};
 
 /// A parsed Org document backed by a lossless syntax tree.
 pub struct OrgTree {
@@ -63,6 +67,11 @@ impl OrgTree {
     /// Debug dump of the syntax tree; useful for comparing incremental vs. full parses.
     pub fn debug_tree(&self) -> String {
         format!("{:#?}", self.org.document().syntax())
+    }
+
+    /// Live-preview decorations (markup to hide, replace, or style), sorted by start.
+    pub fn decorations(&self) -> Vec<Decoration> {
+        decorations::collect(&decorations::root_of(&self.org))
     }
 
     /// TODO keywords in effect: (not-done states, done states), in cycle order.

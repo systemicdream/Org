@@ -25,6 +25,13 @@ gpui = { version = "=0.2.2", default-features = false, features = [
 ] }
 orgize = { package = "orgize-ng", version = "=0.10.0-alpha.12" }
 unicode-segmentation = "1.12"
+unicode-width = "0.2"
+# Pure-Rust regex engine (no oniguruma C dependency).
+syntect = { version = "=5.3.0", default-features = false, features = [
+    "default-syntaxes",
+    "default-themes",
+    "regex-fancy",
+] }
 anyhow = "1"
 
 # Lockfile pins (no manifest entry needed, but don't `cargo update` past them blindly):

@@ -4,17 +4,19 @@
 //! undoable, the tree is always in sync with the text, and structural commands (see [`ops`])
 //! are testable without any UI.
 
+pub mod display;
 pub mod folds;
 mod history;
 pub mod ops;
 pub mod search;
+pub mod table;
 pub mod text;
 mod transaction;
 
 use std::ops::Range;
 use std::time::Instant;
 
-use aster_org::{HeadingInfo, OrgTree};
+use aster_org::{Decoration, HeadingInfo, OrgTree};
 use history::History;
 
 pub use history::EditOrigin;
@@ -56,6 +58,7 @@ pub struct Document {
     text: String,
     tree: OrgTree,
     headings: Vec<HeadingInfo>,
+    decorations: Vec<Decoration>,
     history: History,
     version: u64,
     last_change: Option<Transaction>,
@@ -67,6 +70,7 @@ impl Document {
         let tree = OrgTree::parse(&text);
         Self {
             headings: tree.headings(),
+            decorations: tree.decorations(),
             tree,
             text,
             history: History::default(),
@@ -86,6 +90,11 @@ impl Document {
     /// All headings in document order (cached per version).
     pub fn headings(&self) -> &[HeadingInfo] {
         &self.headings
+    }
+
+    /// Live-preview decorations, sorted by start (cached per version).
+    pub fn decorations(&self) -> &[Decoration] {
+        &self.decorations
     }
 
     /// The transaction most recently applied to the text (including by undo/redo), for
@@ -162,6 +171,7 @@ impl Document {
         // Full reparse; see docs/decisions/0001-org-parser.md.
         self.tree = OrgTree::parse(&self.text);
         self.headings = self.tree.headings();
+        self.decorations = self.tree.decorations();
         self.version += 1;
         self.last_change = Some(change);
     }
