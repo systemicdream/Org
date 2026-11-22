@@ -309,6 +309,22 @@ Deferred: hover cursor/tooltip on links, collapsing drawers (properties panel is
 Deferred: a structured properties editor (key/value form), tag autocomplete from the whole
 workspace (Phase 5 index), keyboard-driven drag, hover handles/"⋯" buttons, multiple selection.
 
+
+### Phase 5 task list
+
+- [x] `aster-index`: in-memory index of a folder (titles, FILETAGS, headings, TODO, tags, IDs,
+      conflict copies), full-text search, fuzzy file matching ([0004](decisions/0004-workspace-index.md))
+- [x] Open a folder; sidebar with file tree and tags; last folder/file remembered
+- [x] Generic picker: command palette, Go to file, Search all files, headings by tag
+- [x] `id:` and `file:x.org::*Heading` links across files
+- [x] Folder watching: index updates; open file reloads (undoable) or asks when there are
+      unsaved edits; sync-conflict copies flagged
+- [x] Tag suggestions from the whole folder
+- [ ] Hands-on test on macOS and Linux
+
+Deferred: backlinks panel (with org-roam, later), creating/renaming/deleting files from the
+sidebar, multiple windows, a persistent on-disk index (ADR 0004).
+
 ---
 
 ## 10. Risks

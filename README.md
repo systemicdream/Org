@@ -16,7 +16,8 @@ Phase 0 (spikes). Usable for poking at, not for real notes yet.
 Requires Rust (pinned in `rust-toolchain.toml`; rustup installs it automatically).
 
 ```sh
-cargo run -p aster-app                     # opens a built-in sample
+cargo run -p aster-app                     # reopens your last folder/file, or a sample
+cargo run -p aster-app -- ~/notes          # a folder of .org files becomes the workspace
 cargo run -p aster-app -- path/to/notes.org
 cargo test --workspace
 cargo run --release -p aster-org --example parse_bench
@@ -59,6 +60,10 @@ Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
 | Cmd/Ctrl+click a link | Follow it (headings and `id:` in the file; web links, files) |
 | Tab, Shift+Tab (in a table) | Align the table and move to the next / previous cell |
 | Cmd/Ctrl+Shift+P | Command palette: every command with its shortcut |
+| Cmd/Ctrl+Shift+O | Open a notes folder |
+| Cmd/Ctrl+P | Go to file (fuzzy, by name or `#+TITLE`) |
+| Cmd/Ctrl+Shift+F | Search all files |
+| Cmd/Ctrl+B | Show / hide the sidebar (file tree and tags) |
 | Click a TODO keyword, priority, tag or date | Change it from a menu / date picker |
 | Right-click a heading, or Cmd/Ctrl+. | Heading menu (state, priority, tags, schedule, deadline, move…) |
 | `/` at the start of a line or after a space | Slash menu: headings, to-dos, lists, tables, code, quotes, dates… |
@@ -67,6 +72,15 @@ Standard editing shortcuts, plus (Cmd on macOS, Ctrl on Linux):
 
 Files save automatically one second after you stop typing (atomic write), and on quit.
 A file with `#+STARTUP: overview` opens with every heading folded.
+
+## Notes folder
+
+Open a folder (or a file inside it) and Aster shows its `.org` files in a sidebar with your tags.
+`id:` links and `file:other.org::*Heading` links work across files. Aster watches the folder:
+changes made elsewhere (Emacs, a sync tool) show up immediately, and if a file you have unsaved
+edits in changes on disk, Aster asks which version to keep. Sync-conflict copies are marked ⚠.
+Aster stores nothing in your notes folder; it remembers the last folder and file in its config
+directory (override with `ASTER_SESSION_FILE`).
 
 ## Live preview
 
