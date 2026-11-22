@@ -360,7 +360,7 @@ impl Element for EditorElement {
             .heading_drag
             .as_ref()
             .filter(|d| d.active)
-            .and_then(|d| d.target.clone())
+            .and_then(|d| d.target)
         {
             overlays.push(fill(
                 Bounds::from_corners(point(x, y - px(1.)), point(bounds.right(), y + px(1.))),
