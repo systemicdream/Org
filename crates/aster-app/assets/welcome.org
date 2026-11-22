@@ -20,7 +20,7 @@ Type TODO or DONE right after the stars.
 
 * Shortcuts to try
 (Cmd on macOS, Ctrl on Linux)
-- Cmd/Ctrl+Enter :: tick a checkbox, or step a heading through TODO → DONE → none
+- Cmd/Ctrl+Enter :: tick a checkbox, or step a heading through its TODO states (TODO → NEXT → DONE → none)
 - Alt+Enter :: new heading below this one
 - Tab / Shift+Tab on a heading :: nest it deeper / bring it back out (children follow)
 - Alt+Up / Alt+Down :: move a heading and everything under it
