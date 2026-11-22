@@ -292,6 +292,20 @@ pub fn move_subtree_to(doc: &Document, start: usize, target: DropTarget) -> Opti
         }
     }
 
+    // Dropped onto its own position at a different level: just re-level it in place.
+    if at == range.start || at == range.end {
+        let original = &text[range.clone()];
+        let chunk = if original.ends_with('\n') {
+            chunk
+        } else {
+            chunk.trim_end_matches(['\r', '\n']).to_string()
+        };
+        return Some(OpResult {
+            tx: Transaction::replace(range.clone(), chunk),
+            selection: Selection::cursor(range.start),
+        });
+    }
+
     // Removing the subtree: if it ends the file without a newline, take the newline before it
     // too, so the file doesn't end with a dangling empty line.
     let mut remove = range.clone();
@@ -501,6 +515,41 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn relevel_in_place() {
+        // Last subtree, no trailing newline, dropped on itself one level deeper.
+        let doc = Document::new("* a\n* b\nB");
+        let b = start_of(&doc, "b");
+        let r = move_subtree_to(
+            &doc,
+            b,
+            DropTarget {
+                before: Some(b),
+                level: 2,
+            },
+        );
+        assert_eq!(apply(&doc, r), "* a\n** b\nB");
+        let r = move_subtree_to(
+            &doc,
+            b,
+            DropTarget {
+                before: None,
+                level: 2,
+            },
+        );
+        assert_eq!(apply(&doc, r), "* a\n** b\nB");
+        let doc = Document::new("* a\n** a1\n* b\n");
+        let r = move_subtree_to(
+            &doc,
+            0,
+            DropTarget {
+                before: Some(0),
+                level: 2,
+            },
+        );
+        assert_eq!(apply(&doc, r), "** a\n*** a1\n* b\n");
     }
 
     #[test]
