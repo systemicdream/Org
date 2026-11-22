@@ -187,8 +187,11 @@ name = "aster-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aster-agenda",
+ "aster-doc",
  "aster-editor",
  "aster-index",
+ "chrono",
  "dirs 7.0.0",
  "futures",
  "gpui",

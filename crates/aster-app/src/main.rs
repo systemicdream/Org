@@ -4,6 +4,8 @@
 //! folder as the workspace. Without arguments Aster reopens the last folder and file, or shows
 //! a welcome sample.
 
+mod agenda_view;
+mod capture;
 mod picker;
 mod session;
 mod sidebar;
@@ -35,7 +37,10 @@ actions!(
         FindReplace,
         FindNext,
         FindPrevious,
-        ShowCommandPalette
+        ShowCommandPalette,
+        ShowAgenda,
+        ShowTodoList,
+        Capture
     ]
 );
 
@@ -53,6 +58,8 @@ fn menus() -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
+                MenuItem::action("Capture…", Capture),
+                MenuItem::separator(),
                 MenuItem::action("Open…", Open),
                 MenuItem::action("Open Folder…", OpenFolder),
                 MenuItem::action("Go to File…", QuickOpen),
@@ -83,6 +90,8 @@ fn menus() -> Vec<Menu> {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Command Palette…", ShowCommandPalette),
+                MenuItem::action("Agenda", ShowAgenda),
+                MenuItem::action("To-do List", ShowTodoList),
                 MenuItem::action("Toggle Sidebar", ToggleSidebar),
             ],
         },
@@ -95,6 +104,8 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Move Down", e::MoveSubtreeDown),
                 MenuItem::action("Indent", e::DemoteSubtree),
                 MenuItem::action("Outdent", e::PromoteSubtree),
+                MenuItem::action("Refile…", e::Refile),
+                MenuItem::action("Archive", e::ArchiveSubtree),
                 MenuItem::separator(),
                 MenuItem::action("Fold", e::Fold),
                 MenuItem::action("Unfold", e::Unfold),
@@ -148,12 +159,17 @@ fn main() -> anyhow::Result<()> {
 
     Application::new().run(move |cx: &mut App| {
         aster_editor::bind_keys(cx);
+        agenda_view::bind_keys(cx);
         let mut keys = vec![
             KeyBinding::new("secondary-o", Open, None),
             KeyBinding::new("secondary-shift-o", OpenFolder, None),
             KeyBinding::new("secondary-p", QuickOpen, None),
             KeyBinding::new("secondary-shift-f", SearchAll, None),
             KeyBinding::new("secondary-b", ToggleSidebar, None),
+            KeyBinding::new("secondary-shift-a", ShowAgenda, None),
+            KeyBinding::new("secondary-shift-t", ShowTodoList, None),
+            KeyBinding::new("secondary-n", Capture, None),
+            KeyBinding::new("secondary-shift-r", aster_editor::Refile, None),
             KeyBinding::new("secondary-s", Save, None),
             KeyBinding::new("secondary-shift-s", SaveAs, None),
             KeyBinding::new("secondary-q", Quit, None),

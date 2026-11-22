@@ -83,8 +83,39 @@ fn section_label(text: &'static str) -> impl IntoElement {
         .child(text)
 }
 
+fn view_row(
+    id: &'static str,
+    label: &'static str,
+    cx: &mut Context<Workspace>,
+    on_click: fn(&mut Workspace, &mut gpui::Window, &mut Context<Workspace>),
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px_3()
+        .mx_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(rgb(0x374151))
+        .hover(|d| d.bg(rgb(0xe5e7eb)))
+        .child(label)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |ws, _, window, cx| on_click(ws, window, cx)),
+        )
+}
+
 impl Workspace {
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let views = [
+            view_row("view-agenda", "📅  Agenda", cx, |ws, w, cx| {
+                ws.show_agenda_mode(crate::agenda_view::Mode::Day, w, cx)
+            })
+            .into_any_element(),
+            view_row("view-todo", "☑  To-do list", cx, |ws, w, cx| {
+                ws.show_agenda_mode(crate::agenda_view::Mode::Todo, w, cx)
+            })
+            .into_any_element(),
+        ];
         let index = self.index.read(cx);
         let files: Vec<(String, PathBuf, bool)> = index
             .files()
@@ -204,6 +235,8 @@ impl Workspace {
                     .flex_1()
                     .overflow_y_scroll()
                     .pb_4()
+                    .child(section_label("VIEWS"))
+                    .children(views)
                     .child(section_label("FILES"))
                     .when(empty, |d| {
                         d.child(
