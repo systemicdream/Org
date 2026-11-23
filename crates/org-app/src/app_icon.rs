@@ -59,3 +59,40 @@ pub fn set_dock_icon() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_dock_icon() {}
+
+/// Name the app "Org" in the menu bar when running a bare binary. macOS takes the name from
+/// the bundle's Info.plist and, without one, uses the executable's name (`org`). Call before
+/// the app launches.
+#[cfg(target_os = "macos")]
+pub fn set_app_name() {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
+    use objc2_foundation::NSString;
+
+    let Some(bundle_class) = AnyClass::get(c"NSBundle") else {
+        return;
+    };
+    // SAFETY: plain Foundation messages on the main thread before NSApplication starts. The
+    // info dictionary of a bare binary's main bundle is mutable; check before writing to it.
+    unsafe {
+        let bundle: *mut AnyObject = msg_send![bundle_class, mainBundle];
+        if bundle.is_null() {
+            return;
+        }
+        let info: *mut AnyObject = msg_send![bundle, infoDictionary];
+        if info.is_null() {
+            return;
+        }
+        let set = Sel::register(c"setObject:forKey:");
+        let mutable: Bool = msg_send![info, respondsToSelector: set];
+        if !mutable.as_bool() {
+            return;
+        }
+        let name = NSString::from_str("Org");
+        let key = NSString::from_str("CFBundleName");
+        let _: () = msg_send![info, setObject: &*name, forKey: &*key];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_app_name() {}

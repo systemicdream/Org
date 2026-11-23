@@ -187,6 +187,7 @@ fn main() -> anyhow::Result<()> {
         None => String::new(),
     };
 
+    app_icon::set_app_name();
     Application::new()
         .with_assets(app_icon::Assets)
         .run(move |cx: &mut App| {
