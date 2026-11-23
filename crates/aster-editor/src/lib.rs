@@ -10,6 +10,7 @@
 
 mod element;
 mod find_bar;
+mod format_bar;
 mod highlight;
 mod input;
 mod popup;
@@ -24,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aster_doc::display::RowDisplay;
+use aster_doc::emphasis::Emphasis;
 use aster_doc::folds::Folds;
 use aster_doc::{Document, EditOrigin, Selection, ops, search, text};
 use aster_org::{DecoKind, Decoration};
@@ -105,6 +107,14 @@ actions!(
         OrgCycle,
         /// Org's Shift+TAB: fold or unfold every heading (in a table, the previous cell).
         OrgGlobalCycle,
+        // Formatting (the selection, or the word at the cursor)
+        Bold,
+        Italic,
+        Underline,
+        Strikethrough,
+        InlineCode,
+        /// Make the selection a link's text.
+        InsertLink,
     ]
 );
 
@@ -115,6 +125,13 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 pub fn bind_keys(cx: &mut App) {
     let ctx = Some(KEY_CONTEXT);
     let mut bindings = vec![
+        KeyBinding::new("secondary-b", Bold, ctx),
+        KeyBinding::new("secondary-i", Italic, ctx),
+        KeyBinding::new("secondary-u", Underline, ctx),
+        KeyBinding::new("secondary-shift-x", Strikethrough, ctx),
+        KeyBinding::new("secondary-e", InlineCode, ctx),
+        // Not Cmd/Ctrl+K alone: it starts the fold chords below.
+        KeyBinding::new("secondary-shift-k", InsertLink, ctx),
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
         KeyBinding::new("left", Left, ctx),
@@ -452,7 +469,7 @@ pub struct OrgEditor {
     popup: Option<Popup>,
     vim: vim::VimState,
     /// Where the last popup was shown, so follow-up popups appear in the same place.
-    last_popup_anchor: Point<Pixels>,
+    last_popup_anchor: popup::PopupAnchor,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -536,7 +553,7 @@ impl OrgEditor {
             known_tags: Vec::new(),
             popup: None,
             vim: vim::VimState::default(),
-            last_popup_anchor: Point::default(),
+            last_popup_anchor: popup::PopupAnchor::default(),
             _subscriptions: subscriptions,
         };
         if mode == EditorMode::Full && startup_folded(this.doc.text()) {
@@ -2329,8 +2346,7 @@ impl OrgEditor {
                 .cloned()
             && aster_doc::meta::tags_range(&self.doc, &h).is_some()
         {
-            let anchor = bounds.bottom_left() + point(px(0.), px(4.));
-            self.open_tags_menu(start, anchor, cx);
+            self.open_tags_menu(start, popup::PopupAnchor::below(bounds), cx);
             return true;
         }
         let Some((i, col)) = self.hit_test(event.position, window) else {
@@ -2522,7 +2538,10 @@ impl OrgEditor {
         let row = self.row_for_offset(offset);
         let start = self.line_starts[row];
         if self.heading_level(row).is_some() {
-            self.open_heading_menu(start, event.position, cx);
+            // At the pointer, like other context menus.
+            let at =
+                popup::PopupAnchor::below(Bounds::new(event.position, gpui::size(px(0.), px(0.))));
+            self.open_heading_menu(start, at, cx);
         }
     }
 
@@ -2687,7 +2706,7 @@ impl OrgEditor {
 }
 
 impl Render for OrgEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // With Vim keys on, the mode is part of the key context ("OrgEditor && vim_normal").
         let mut key_context = gpui::KeyContext::new_with_defaults();
         key_context.add(KEY_CONTEXT);
@@ -2757,6 +2776,22 @@ impl Render for OrgEditor {
             EditorMode::Full => self
                 .vim_actions(base, cx)
                 .on_action(cx.listener(Self::toggle_done))
+                .on_action(
+                    cx.listener(|e, _: &Bold, _, cx| e.format_selection(Some(Emphasis::Bold), cx)),
+                )
+                .on_action(cx.listener(|e, _: &Italic, _, cx| {
+                    e.format_selection(Some(Emphasis::Italic), cx)
+                }))
+                .on_action(cx.listener(|e, _: &Underline, _, cx| {
+                    e.format_selection(Some(Emphasis::Underline), cx)
+                }))
+                .on_action(cx.listener(|e, _: &Strikethrough, _, cx| {
+                    e.format_selection(Some(Emphasis::Strike), cx)
+                }))
+                .on_action(cx.listener(|e, _: &InlineCode, _, cx| {
+                    e.format_selection(Some(Emphasis::Code), cx)
+                }))
+                .on_action(cx.listener(|e, _: &InsertLink, _, cx| e.format_selection(None, cx)))
                 .on_action(cx.listener(Self::cycle_todo_backward))
                 .on_action(cx.listener(Self::insert_heading))
                 .on_action(cx.listener(Self::promote_subtree))
@@ -2769,6 +2804,7 @@ impl Render for OrgEditor {
                 .on_action(cx.listener(Self::open_heading_menu_action))
                 .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
                 .children(self.render_popup(cx))
+                .children(self.render_format_bar(window, cx))
                 .on_action(cx.listener(Self::fold))
                 .on_action(cx.listener(Self::unfold))
                 .on_action(cx.listener(Self::fold_all))

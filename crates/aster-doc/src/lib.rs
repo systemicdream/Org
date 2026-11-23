@@ -6,6 +6,7 @@
 
 pub mod dates;
 pub mod display;
+pub mod emphasis;
 pub mod folds;
 mod history;
 pub mod meta;

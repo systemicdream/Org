@@ -106,7 +106,10 @@ Files save automatically a second after you stop typing, and on quit.
 | Cmd/Ctrl+Shift+O | Open a notes folder |
 | Cmd/Ctrl+P | Go to file (fuzzy, by name or `#+TITLE`) |
 | Cmd/Ctrl+Shift+F | Search all files |
-| Cmd/Ctrl+B | Show / hide the sidebar (file tree and tags) |
+| Cmd/Ctrl+\ | Show / hide the sidebar (file tree and tags) |
+| Cmd/Ctrl+B, I, U | Bold, italic, underline (the selection, or the word at the cursor) |
+| Cmd/Ctrl+Shift+X, Cmd/Ctrl+E, Cmd/Ctrl+Shift+K | Strikethrough, code, link |
+| Select text | Formatting toolbar: bold, italic, underline, strikethrough, code, link |
 | Cmd/Ctrl+Shift+A, Cmd/Ctrl+Shift+T | Agenda, to-do list |
 | Cmd/Ctrl+N | Capture a task, note or journal entry |
 | Cmd/Ctrl+Shift+R | Refile the heading at the cursor |

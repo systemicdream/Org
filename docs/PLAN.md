@@ -15,7 +15,7 @@ What this means for every design decision:
 
 - **Discoverable over memorized.** Every action is reachable by mouse, menu, slash command,
   or command palette. Keyboard shortcuts are shown next to actions so users learn them gradually.
-- **Familiar defaults.** Standard platform shortcuts (Cmd/Ctrl+B, Cmd/Ctrl+S, Cmd/Ctrl+Z, etc.).
+- **Familiar defaults.** Standard platform shortcuts (Cmd/Ctrl+S, Cmd/Ctrl+Z, etc.).
   An optional Emacs-style keymap exists for those who want it, but it's never required.
 - **Org concepts explained in the UI.** TODO states, tags, properties, scheduled/deadline, and
   the agenda get plain-language labels, tooltips, and empty states that teach.

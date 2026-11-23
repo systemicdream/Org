@@ -35,7 +35,7 @@ fn standard() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-shift-o", OpenFolder, None),
         KeyBinding::new("secondary-p", QuickOpen, None),
         KeyBinding::new("secondary-shift-f", SearchAll, None),
-        KeyBinding::new("secondary-b", ToggleSidebar, None),
+        KeyBinding::new("secondary-\\", ToggleSidebar, None),
         KeyBinding::new("secondary-shift-a", ShowAgenda, None),
         KeyBinding::new("secondary-shift-t", ShowTodoList, None),
         KeyBinding::new("secondary-n", Capture, None),

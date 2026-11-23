@@ -103,6 +103,18 @@ pub(crate) fn menus() -> Vec<Menu> {
             ],
         },
         Menu {
+            name: "Format".into(),
+            items: vec![
+                MenuItem::action("Bold", e::Bold),
+                MenuItem::action("Italic", e::Italic),
+                MenuItem::action("Underline", e::Underline),
+                MenuItem::action("Strikethrough", e::Strikethrough),
+                MenuItem::action("Code", e::InlineCode),
+                MenuItem::separator(),
+                MenuItem::action("Link", e::InsertLink),
+            ],
+        },
+        Menu {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Command Palette…", ShowCommandPalette),

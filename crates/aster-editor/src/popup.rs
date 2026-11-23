@@ -7,8 +7,8 @@ use aster_doc::meta::{self, Planning};
 use aster_doc::{EditOrigin, Selection, Transaction, dates, ops};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
-    AnyElement, Context, Entity, Focusable, MouseButton, Pixels, Point, SharedString, Subscription,
-    Window, anchored, deferred, div, prelude::*, px,
+    AnyElement, Bounds, Context, Entity, Focusable, MouseButton, Pixels, SharedString,
+    Subscription, Window, anchored, deferred, div, prelude::*, px,
 };
 
 use crate::{EditorEvent, OrgEditor};
@@ -89,20 +89,20 @@ impl MenuItem {
 
 pub(crate) enum Popup {
     Menu {
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         title: Option<SharedString>,
         items: Vec<MenuItem>,
         selected: usize,
     },
     Date {
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         target: DateTarget,
         month: NaiveDate,
         selected: NaiveDate,
         clearable: bool,
     },
     TagInput {
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         heading: usize,
         input: Entity<OrgEditor>,
         _subscription: Subscription,
@@ -123,6 +123,50 @@ pub(crate) enum NavKey {
     Right,
     Enter,
     Escape,
+}
+
+/// Where a popup attaches to the text: a rectangle (usually a line of text) it opens next to.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct PopupAnchor {
+    pub bounds: Bounds<Pixels>,
+    /// Prefer opening above the rectangle (the formatting toolbar) rather than below it.
+    pub above: bool,
+}
+
+/// Space between a popup and the text it belongs to.
+const POPUP_GAP: f32 = 4.;
+
+impl PopupAnchor {
+    pub(crate) fn below(bounds: Bounds<Pixels>) -> Self {
+        Self {
+            bounds,
+            above: false,
+        }
+    }
+
+    pub(crate) fn above(bounds: Bounds<Pixels>) -> Self {
+        Self {
+            bounds,
+            above: true,
+        }
+    }
+
+    /// Position `a` on the preferred side, flipping to the other side of the text (never over
+    /// it) when the window has no room.
+    pub(crate) fn place(self, a: gpui::Anchored) -> gpui::Anchored {
+        let gap = px(POPUP_GAP);
+        let span = self.bounds.size.height + gap * 2.;
+        // GPUI flips around the anchor point, so anchor on the far side of the text and
+        // offset across it: the flipped position then lands just beyond the near side.
+        if self.above {
+            a.anchor(gpui::Corner::BottomLeft)
+                .position(self.bounds.bottom_left() + gpui::point(px(0.), gap))
+                .offset(gpui::point(px(0.), -span))
+        } else {
+            a.position(self.bounds.origin - gpui::point(px(0.), gap))
+                .offset(gpui::point(px(0.), span))
+        }
+    }
 }
 
 // ---- slash menu items -------------------------------------------------------------------
@@ -223,16 +267,16 @@ fn add_months(d: NaiveDate, months: i32) -> NaiveDate {
 impl OrgEditor {
     // ---- opening ------------------------------------------------------------------------
 
-    /// Bottom-left corner of a text range, in window coordinates.
-    pub(crate) fn anchor_below(&self, range: Range<usize>) -> Point<Pixels> {
+    /// Where a popup for a text range goes: under its line, or above when there's no room.
+    pub(crate) fn anchor_below(&self, range: Range<usize>) -> PopupAnchor {
         self.bounds_for_offsets(range)
-            .map(|b| b.bottom_left() + gpui::point(px(0.), px(4.)))
+            .map(PopupAnchor::below)
             .unwrap_or_default()
     }
 
     fn open_menu(
         &mut self,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         title: Option<&str>,
         items: Vec<MenuItem>,
         cx: &mut Context<Self>,
@@ -247,12 +291,7 @@ impl OrgEditor {
         cx.notify();
     }
 
-    pub(crate) fn open_todo_menu(
-        &mut self,
-        h: usize,
-        anchor: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn open_todo_menu(&mut self, h: usize, anchor: PopupAnchor, cx: &mut Context<Self>) {
         let current = meta::heading(&self.doc, h).and_then(|h| h.todo.clone());
         let mut items: Vec<MenuItem> = meta::todo_states(&self.doc)
             .into_iter()
@@ -270,7 +309,7 @@ impl OrgEditor {
     pub(crate) fn open_priority_menu(
         &mut self,
         h: usize,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         cx: &mut Context<Self>,
     ) {
         let current = meta::heading(&self.doc, h)
@@ -290,12 +329,7 @@ impl OrgEditor {
         self.open_menu(anchor, Some("Priority"), items, cx);
     }
 
-    pub(crate) fn open_tags_menu(
-        &mut self,
-        h: usize,
-        anchor: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn open_tags_menu(&mut self, h: usize, anchor: PopupAnchor, cx: &mut Context<Self>) {
         let tags = meta::heading(&self.doc, h)
             .map(|h| h.tags.clone())
             .unwrap_or_default();
@@ -323,7 +357,7 @@ impl OrgEditor {
     pub(crate) fn open_heading_menu(
         &mut self,
         h: usize,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         cx: &mut Context<Self>,
     ) {
         let key = |s: &str| SharedString::from(s.to_string());
@@ -382,7 +416,7 @@ impl OrgEditor {
     pub(crate) fn open_date_picker(
         &mut self,
         target: DateTarget,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         cx: &mut Context<Self>,
     ) {
         let (initial, clearable) = match &target {
@@ -404,7 +438,7 @@ impl OrgEditor {
     fn open_tag_input(
         &mut self,
         h: usize,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -796,7 +830,7 @@ impl OrgEditor {
             self.popup = None;
         }
         let popup = self.popup.as_ref()?;
-        let (anchor, body): (Point<Pixels>, AnyElement) = match popup {
+        let (anchor, body): (PopupAnchor, AnyElement) = match popup {
             Popup::Menu {
                 anchor,
                 title,
@@ -838,14 +872,9 @@ impl OrgEditor {
         };
         self.last_popup_anchor = anchor;
         Some(
-            deferred(
-                anchored()
-                    .position(anchor)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(body),
-            )
-            .with_priority(1)
-            .into_any_element(),
+            deferred(anchor.place(anchored()).child(body))
+                .with_priority(1)
+                .into_any_element(),
         )
     }
 
