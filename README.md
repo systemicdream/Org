@@ -30,6 +30,8 @@ editor with an agenda, quick capture and refile.
 - **Discoverable:** a command palette lists every command with its shortcut, and a slash menu
   inserts headings, to-dos, tables, dates and more. Optional Emacs and Vim keys.
 
+![The agenda's week view: scheduled tasks, deadlines and an overdue item across the notes folder](docs/images/agenda.png)
+
 ## Installing
 
 Download the package for your system from the
