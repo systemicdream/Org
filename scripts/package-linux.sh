@@ -61,14 +61,14 @@ for format in "${FORMATS[@]}"; do
         mv "$PKG/usr/share/licenses/org/LICENSE" "$PKG/usr/share/doc/org/copyright"
         rm -rf "$PKG/usr/share/licenses"
         mkdir -p "$PKG/DEBIAN"
-        # Linked: libc, libgcc, libxkbcommon. Loaded at runtime: Wayland and Vulkan.
+        # Linked: libc, libgcc, libxkbcommon(-x11), fontconfig, freetype. Loaded at runtime: Wayland, Vulkan.
         cat > "$PKG/DEBIAN/control" <<CONTROL
 Package: org
 Version: $VERSION
 Architecture: $DEB_ARCH
 Maintainer: Org <$HOMEPAGE>
 Installed-Size: $(du -sk "$PKG/usr" | cut -f1)
-Depends: libc6 (>= 2.35), libgcc-s1, libxkbcommon0, libwayland-client0, libvulkan1
+Depends: libc6 (>= 2.35), libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1, libfreetype6, libwayland-client0, libvulkan1
 Recommends: mesa-vulkan-drivers
 Section: editors
 Priority: optional

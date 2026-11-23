@@ -545,7 +545,14 @@ impl OrgEditor {
             _ => 0,
         };
         let then = match self.popup.as_mut() {
-            None | Some(Popup::TagInput { .. }) => return false,
+            None => return false,
+            Some(Popup::TagInput { .. }) => {
+                if key == NavKey::Escape {
+                    Then::Close
+                } else {
+                    return false;
+                }
+            }
             Some(Popup::Menu {
                 items, selected, ..
             }) => {
@@ -998,7 +1005,10 @@ impl OrgEditor {
 }
 
 fn panel(cx: &gpui::App) -> gpui::Div {
-    org_ui::components::flyout(cx)
+    // Keep clicks on the popup surface/padding from bubbling to the editor behind it.
+    org_ui::components::flyout(cx).on_mouse_down(MouseButton::Left, |_, _, cx| {
+        cx.stop_propagation();
+    })
 }
 
 /// A menu row (docs/DESIGN.md §7): 28 px, 4 px radius, keyboard selection uses the hover fill,

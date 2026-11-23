@@ -48,6 +48,7 @@ fn standard() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-shift-p", ShowCommandPalette, None),
         KeyBinding::new("secondary-shift-g", FindPrevious, None),
         KeyBinding::new("secondary-,", ShowSettings, None),
+        KeyBinding::new("escape", Dismiss, Some("Workspace")),
     ];
     keys.push(if cfg!(target_os = "macos") {
         KeyBinding::new("cmd-alt-f", FindReplace, None)

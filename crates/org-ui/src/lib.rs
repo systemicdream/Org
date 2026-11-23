@@ -356,11 +356,14 @@ pub fn set_appearance(system_appearance: impl Into<Appearance>, cx: &mut App) ->
     rebuild(cx, |a, _, _| *a = system_appearance)
 }
 
-/// Re-read the system accent (e.g. when the app regains focus). Returns whether what's on
-/// screen changes.
-pub fn refresh_accent(cx: &mut App) -> bool {
-    let system_accent = accent::system_accent();
+/// Apply a freshly read system accent color. Returns whether what's on screen changes.
+pub fn set_system_accent(system_accent: Option<Rgba>, cx: &mut App) -> bool {
     rebuild(cx, |_, a, _| *a = system_accent)
+}
+
+/// Re-read the system accent synchronously. Returns whether what's on screen changes.
+pub fn refresh_accent(cx: &mut App) -> bool {
+    set_system_accent(accent::system_accent(), cx)
 }
 
 /// Apply the user's theme choices. Returns whether what's on screen changes.

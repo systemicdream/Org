@@ -6,6 +6,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/systemicdream/Org"
+homepage = "https://github.com/systemicdream/Org"
 
 [workspace.dependencies]
 org-syntax = { path = "crates/org-syntax" }

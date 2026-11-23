@@ -54,7 +54,8 @@ actions!(
         ShowAgenda,
         ShowTodoList,
         ShowSettings,
-        Capture
+        Capture,
+        Dismiss
     ]
 );
 
@@ -167,6 +168,44 @@ fn startup_target() -> (Option<PathBuf>, Option<PathBuf>) {
     }
 }
 
+/// Decode a `file://` URL (as delivered by macOS `application:openURLs:`) into a local path.
+fn file_url_to_path(url: &str) -> Option<PathBuf> {
+    let raw = if let Some(rest) = url.strip_prefix("file://localhost/") {
+        format!("/{rest}")
+    } else if let Some(rest) = url.strip_prefix("file:///") {
+        format!("/{rest}")
+    } else if url.starts_with('/') {
+        url.to_string()
+    } else {
+        return None;
+    };
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+        {
+            decoded.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(decoded).ok().map(PathBuf::from)
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Org's Linux build only includes GPUI's Wayland backend. Without a Wayland session GPUI
     // would fall back to a headless platform and fail obscurely, so stop with a clear message.
@@ -180,52 +219,87 @@ fn main() -> anyhow::Result<()> {
 
     session::move_old_app_folders();
     release::install_panic_hook();
-    let (file, root) = startup_target();
-    let text = match &file {
-        Some(p) if p.exists() => read_org(p)?,
-        Some(_) => String::new(),
-        None => String::new(),
+    let (mut file, root) = startup_target();
+    let (text, startup_error) = match &file {
+        Some(p) if p.exists() => match read_org(p) {
+            Ok(text) => (text, None),
+            Err(err) => {
+                let msg = format!("Couldn't open {}: {err:#}", p.display());
+                file = None;
+                (String::new(), Some(msg))
+            }
+        },
+        _ => (String::new(), None),
     };
 
     app_icon::set_app_name();
-    Application::new()
-        .with_assets(app_icon::Assets)
-        .run(move |cx: &mut App| {
-            app_icon::set_dock_icon();
-            let settings = Settings::load();
-            let window_background = settings.window_background();
-            org_ui::init(cx.window_appearance(), settings.theme_prefs(), cx);
-            keymap::apply(settings.keymap, cx);
-            cx.set_global(settings);
+    let (open_tx, open_rx) = futures::channel::mpsc::unbounded();
+    let app = Application::new().with_assets(app_icon::Assets);
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            if let Some(path) = file_url_to_path(&url) {
+                let _ = open_tx.unbounded_send(path);
+            }
+        }
+    });
+    app.run(move |cx: &mut App| {
+        app_icon::set_dock_icon();
+        let settings = Settings::load();
+        let window_background = settings.window_background();
+        org_ui::init(cx.window_appearance(), settings.theme_prefs(), cx);
+        keymap::apply(settings.keymap, cx);
+        cx.set_global(settings);
 
-            let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
-            let window = cx
-                .open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        window_background,
-                        // Wayland: ties the window to the desktop entry, and so to its icon.
-                        app_id: Some(app_icon::APP_ID.into()),
-                        // macOS: draw our own title area (docs/DESIGN.md §11).
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("Org".into()),
-                            appears_transparent: cfg!(target_os = "macos"),
-                            traffic_light_position: Some(point(px(14.), px(13.))),
-                        }),
-                        ..Default::default()
-                    },
-                    |window, cx| cx.new(|cx| Workspace::new(text, file, root, window, cx)),
-                )
-                .expect("failed to open window");
+        let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
+        let window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_background,
+                    // Wayland: ties the window to the desktop entry, and so to its icon.
+                    app_id: Some(app_icon::APP_ID.into()),
+                    // macOS: draw our own title area (docs/DESIGN.md §11).
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Org".into()),
+                        appears_transparent: cfg!(target_os = "macos"),
+                        traffic_light_position: Some(point(px(14.), px(13.))),
+                    }),
+                    ..Default::default()
+                },
+                |window, cx| cx.new(|cx| Workspace::new(text, file, root, window, cx)),
+            )
+            .expect("failed to open window");
 
-            window
-                .update(cx, |ws, window, cx| {
-                    ws.focus_main(window, cx);
-                    ws.startup_notices(cx);
-                    cx.activate(true);
-                })
-                .ok();
-            window_blur::sync(window_background == gpui::WindowBackgroundAppearance::Blurred);
-        });
+        window
+            .update(cx, |ws, window, cx| {
+                ws.focus_main(window, cx);
+                ws.startup_notices(cx);
+                if let Some(err) = startup_error {
+                    ws.toast(err, true, cx);
+                }
+                ws.watch_open_urls(open_rx, window, cx);
+                cx.activate(true);
+            })
+            .ok();
+        window_blur::sync(window_background == gpui::WindowBackgroundAppearance::Blurred);
+    });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_file_urls() {
+        assert_eq!(
+            file_url_to_path("file:///Users/test/My%20Notes/todo.org"),
+            Some(PathBuf::from("/Users/test/My Notes/todo.org"))
+        );
+        assert_eq!(
+            file_url_to_path("file://localhost/tmp/%E6%97%A5%E6%9C%AC.org"),
+            Some(PathBuf::from("/tmp/日本.org"))
+        );
+        assert_eq!(file_url_to_path("https://example.com/a.org"), None);
+    }
 }

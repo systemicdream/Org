@@ -289,18 +289,38 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// A "new issue" link with the report filled in (shortened to keep the URL a sane length).
-pub fn crash_issue_url(report: &str) -> String {
-    const MAX_REPORT: usize = 4000;
-    let mut report = report.trim().to_string();
-    if report.len() > MAX_REPORT {
-        let mut cut = MAX_REPORT;
-        while !report.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        report.truncate(cut);
-        report.push_str("\n… (shortened: the full report is on your computer)");
+fn encoded_byte_len(b: u8) -> usize {
+    match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => 1,
+        _ => 3,
     }
+}
+
+/// Truncate `s` on a UTF-8 boundary so `percent_encode(prefix).len() <= max_encoded`.
+fn truncate_for_url(s: &str, max_encoded: usize) -> (&str, bool) {
+    let mut encoded = 0;
+    let mut cut = 0;
+    for (idx, ch) in s.char_indices() {
+        let len: usize = ch
+            .encode_utf8(&mut [0; 4])
+            .bytes()
+            .map(encoded_byte_len)
+            .sum();
+        if encoded + len > max_encoded {
+            return (&s[..cut], true);
+        }
+        encoded += len;
+        cut = idx + ch.len_utf8();
+    }
+    (s, false)
+}
+
+/// A "new issue" link with the report filled in, kept under GitHub's ~8 KB URL limit.
+pub fn crash_issue_url(report: &str) -> String {
+    const MAX_URL_LEN: usize = 7500;
+    const SHORTENED_NOTE: &str = "\n… (shortened: the full report is on your computer)";
+
+    let report = report.trim();
     let summary = report
         .lines()
         .find_map(|l| {
@@ -310,14 +330,26 @@ pub fn crash_issue_url(report: &str) -> String {
         .map(|l| l.chars().take(80).collect::<String>())
         .unwrap_or_else(|| "Org crashed".into());
     let title = format!("Crash: {summary}");
-    let body = format!(
-        "**What were you doing when Org crashed?**\n\n\n\n**Crash report**\n\n```text\n{report}\n```\n"
+    let prefix = format!(
+        "{REPO_URL}/issues/new?title={}&body=",
+        percent_encode(&title)
     );
-    format!(
-        "{REPO_URL}/issues/new?title={}&body={}",
-        percent_encode(&title),
-        percent_encode(&body)
-    )
+    let body_head =
+        "**What were you doing when Org crashed?**\n\n\n\n**Crash report**\n\n```text\n";
+    let body_tail = "\n```\n";
+    let fixed_len =
+        prefix.len() + percent_encode(body_head).len() + percent_encode(body_tail).len();
+    let budget = MAX_URL_LEN.saturating_sub(fixed_len);
+
+    let full_encoded = percent_encode(report);
+    let body = if full_encoded.len() <= budget {
+        format!("{body_head}{report}{body_tail}")
+    } else {
+        let note_len = percent_encode(SHORTENED_NOTE).len();
+        let (head, _) = truncate_for_url(report, budget.saturating_sub(note_len));
+        format!("{body_head}{head}{SHORTENED_NOTE}{body_tail}")
+    };
+    format!("{prefix}{}", percent_encode(&body))
 }
 
 /// A "new issue" link for reporting a problem, with the version and system filled in.
@@ -360,7 +392,13 @@ mod tests {
         assert!(url.contains("oops%20%26%20more"));
         assert!(!url.contains(' '));
         let long = "é".repeat(10_000);
-        assert!(crash_issue_url(&long).len() < 40_000);
+        let long_url = crash_issue_url(&long);
+        assert!(long_url.len() <= 7500, "len={}", long_url.len());
+        let backtrace =
+            "  12: org::workspace::Workspace::render (src/workspace.rs:100:5)\n".repeat(200);
+        let bt_url = crash_issue_url(&backtrace);
+        assert!(bt_url.len() <= 7500, "len={}", bt_url.len());
+        assert!(bt_url.contains("shortened"));
     }
 
     #[test]

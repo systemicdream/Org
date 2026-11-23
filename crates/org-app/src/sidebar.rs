@@ -116,7 +116,10 @@ fn view_row(
         .child(label)
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |ws, _, window, cx| on_click(ws, window, cx)),
+            cx.listener(move |ws, _, window, cx| {
+                cx.stop_propagation();
+                on_click(ws, window, cx);
+            }),
         )
 }
 
@@ -239,7 +242,10 @@ impl Workspace {
                 })
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |ws, _, window, cx| ws.open_path(path.clone(), window, cx)),
+                    cx.listener(move |ws, _, window, cx| {
+                        cx.stop_propagation();
+                        ws.open_path(path.clone(), window, cx);
+                    }),
                 )
                 .into_any_element()
         });
@@ -337,15 +343,18 @@ impl Workspace {
                     })
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| match &kind {
-                            TreeKind::Folder { rel, .. } => {
-                                if !this.expanded.remove(rel) {
-                                    this.expanded.insert(rel.clone());
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            match &kind {
+                                TreeKind::Folder { rel, .. } => {
+                                    if !this.expanded.remove(rel) {
+                                        this.expanded.insert(rel.clone());
+                                    }
+                                    cx.notify();
                                 }
-                                cx.notify();
-                            }
-                            TreeKind::File { path, .. } => {
-                                this.open_path(path.clone(), window, cx);
+                                TreeKind::File { path, .. } => {
+                                    this.open_path(path.clone(), window, cx);
+                                }
                             }
                         }),
                     )
@@ -371,7 +380,10 @@ impl Workspace {
                     .child(components::caption(count.to_string(), cx))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| this.show_tag(&t, window, cx)),
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.show_tag(&t, window, cx);
+                        }),
                     )
             })
             .collect();

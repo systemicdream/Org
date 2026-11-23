@@ -50,7 +50,9 @@ pub struct Workspace {
     find_bar: Option<Entity<FindBar>>,
     autosave: Option<Task<()>>,
     _editor_subscription: Subscription,
+    _quit_subscription: Subscription,
     _find_subscription: Option<Subscription>,
+    _open_urls: Option<Task<()>>,
     picker: Option<(Entity<Picker>, Subscription)>,
     /// Commands offered by the command palette (rebuilt when it opens).
     commands: Vec<(&'static str, Box<dyn Action>)>,
@@ -97,6 +99,19 @@ impl Workspace {
     ) -> Self {
         let last_saved = path.is_some().then(|| text.clone());
         let (editor, sub) = Self::make_editor(text, window, cx);
+        let quit_sub = cx.on_app_quit(|ws, cx| {
+            ws.save_dirty_sync(cx);
+            async {}
+        });
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = weak.update(cx, |ws, cx| {
+                if ws.dirty {
+                    ws.save_now(window, cx);
+                }
+            });
+            true
+        });
         let mut ws = Self {
             last_saved,
             editor,
@@ -105,7 +120,9 @@ impl Workspace {
             find_bar: None,
             autosave: None,
             _editor_subscription: sub,
+            _quit_subscription: quit_sub,
             _find_subscription: None,
+            _open_urls: None,
             picker: None,
             commands: Vec::new(),
             root: None,
@@ -129,18 +146,18 @@ impl Workspace {
             notices: Vec::new(),
         };
         window.set_window_title(&ws.title());
-        // Follow the system's light/dark setting.
+        // Follow the system's light/dark setting, and refresh the accent off the UI thread.
         cx.observe_window_appearance(window, |_, window, cx| {
-            let changed = org_ui::set_appearance(window.appearance(), cx);
-            if org_ui::refresh_accent(cx) | changed {
+            if org_ui::set_appearance(window.appearance(), cx) {
                 window.refresh();
             }
+            refresh_accent_async(window, cx);
         })
         .detach();
         // Pick up a changed system accent color when the window comes back into focus.
         cx.observe_window_activation(window, |_, window, cx| {
-            if window.is_window_active() && org_ui::refresh_accent(cx) {
-                window.refresh();
+            if window.is_window_active() {
+                refresh_accent_async(window, cx);
             }
         })
         .detach();
@@ -181,14 +198,20 @@ impl Workspace {
             |this, _, event: &EditorEvent, window, cx| match event {
                 EditorEvent::Edited => this.mark_dirty(window, cx),
                 EditorEvent::OpenLink(target) => this.open_link(target, window, cx),
+                EditorEvent::Cancel => this.dismiss_overlays(window, cx),
                 _ => {}
             },
         );
         (editor, sub)
     }
 
-    /// The window title: just the open note's name.
+    /// The window title: the active view, or the open note's name.
     pub(crate) fn title(&self) -> String {
+        match self.view {
+            MainView::Agenda => return "Agenda".into(),
+            MainView::Settings => return "Settings".into(),
+            MainView::Editor => {}
+        }
         let in_root = |p: &Path| {
             self.root
                 .as_deref()
@@ -204,6 +227,47 @@ impl Workspace {
             (None, true) => "Welcome".into(),
             (None, false) => "Org".into(),
         }
+    }
+
+    /// Listen for files/folders handed to the app by the OS (e.g. Finder "Open With").
+    pub(crate) fn watch_open_urls(
+        &mut self,
+        mut rx: futures::channel::mpsc::UnboundedReceiver<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._open_urls = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Some(path) = rx.next().await {
+                let ok = this
+                    .update_in(cx, |ws, window, cx| {
+                        ws.open_external(path, window, cx);
+                        cx.activate(true);
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Open a file or folder handed in from outside Org (Finder, Drag to Dock, etc.).
+    fn open_external(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        if path.is_dir() {
+            self.switch_notebook(path, window, cx);
+            return;
+        }
+        if self.root.is_none() {
+            let root = Session::load()
+                .root
+                .filter(|r| r.is_dir() && path.starts_with(r))
+                .or_else(|| path.parent().map(PathBuf::from));
+            if let Some(root) = root {
+                self.set_root(root, window, cx);
+            }
+        }
+        self.open_path(path, window, cx);
     }
 
     /// Drop a pending autosave (the edits stay in the editor, marked unsaved).
@@ -381,6 +445,7 @@ impl Workspace {
             }
         };
         self.view = MainView::Agenda;
+        window.set_window_title(&self.title());
         view.update(cx, |v, cx| v.set_mode(mode, window, cx));
         cx.notify();
     }
@@ -392,6 +457,7 @@ impl Workspace {
 
     fn show_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.view = MainView::Editor;
+        window.set_window_title(&self.title());
         self.focus_main(window, cx);
         cx.notify();
     }
@@ -438,6 +504,7 @@ impl Workspace {
         };
         self.close_find_bar(window, cx);
         self.view = MainView::Settings;
+        window.set_window_title(&self.title());
         window.focus(&view.focus_handle(cx));
         cx.notify();
     }
@@ -834,6 +901,22 @@ impl Workspace {
         .detach();
     }
 
+    /// Flush unsaved edits during app shutdown (when no `Window` handle is available).
+    fn save_dirty_sync(&mut self, cx: &mut Context<Self>) {
+        if !self.dirty {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        self.autosave = None;
+        let text = self.editor.read(cx).text().to_owned();
+        if write_atomic(&path, &text).is_ok() {
+            self.last_saved = Some(text);
+            self.dirty = false;
+        }
+    }
+
     pub(crate) fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
         if self.dirty {
             self.save_now(window, cx);
@@ -1225,6 +1308,35 @@ impl Workspace {
         cx.notify();
     }
 
+    fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_overlays(window, cx);
+    }
+
+    /// Close any open workspace overlay (picker, capture, dialog, context/notebook menu).
+    fn dismiss_overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut closed = false;
+        if self.picker.take().is_some() {
+            self.refile_source = None;
+            closed = true;
+        }
+        if self.capture.take().is_some() {
+            closed = true;
+        }
+        if self.name_dialog.take().is_some() {
+            closed = true;
+        }
+        if self.tree_menu.take().is_some() {
+            closed = true;
+        }
+        if self.notebook_menu.take().is_some() {
+            closed = true;
+        }
+        if closed {
+            self.focus_main(window, cx);
+            cx.notify();
+        }
+    }
+
     fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refile_source = None;
         if self.picker.take().is_some() {
@@ -1505,20 +1617,70 @@ impl Workspace {
     }
 }
 
+/// Read the OS accent color off the UI thread (Linux may invoke `gdbus`/`gsettings`), then
+/// apply it on the foreground thread if it changed.
+fn refresh_accent_async(window: &mut Window, cx: &mut Context<Workspace>) {
+    let read = cx
+        .background_executor()
+        .spawn(async { org_ui::accent::system_accent() });
+    cx.spawn_in(window, async move |_, cx| {
+        let accent = read.await;
+        let _ = cx.update(|window, cx| {
+            if org_ui::set_system_accent(accent, cx) {
+                window.refresh();
+            }
+        });
+    })
+    .detach();
+}
+
 pub fn read_org(path: &Path) -> anyhow::Result<String> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     String::from_utf8(bytes).context("Org currently only opens UTF-8 files")
 }
 
+/// Follow a symlink so atomic renames update the target instead of replacing the link.
+fn resolve_write_target(path: &Path) -> PathBuf {
+    if !path.is_symlink() {
+        return path.to_path_buf();
+    }
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    if let Ok(link) = std::fs::read_link(path) {
+        return if link.is_absolute() {
+            link
+        } else {
+            path.parent().unwrap_or(Path::new(".")).join(link)
+        };
+    }
+    path.to_path_buf()
+}
+
 /// Write via a temp file + rename so sync tools never observe a half-written file.
 pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let tmp = dir.join(format!(
-        ".{}.org-tmp",
-        path.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let target = resolve_write_target(path);
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.{}.{seq}.org-tmp", std::process::id()));
+    if let Err(err) = std::fs::write(&tmp, text) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("writing {}", tmp.display()));
+    }
+    if let Ok(meta) = std::fs::metadata(&target) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    if let Err(err) = std::fs::rename(&tmp, &target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("replacing {}", target.display()));
+    }
     Ok(())
 }
 
@@ -1643,11 +1805,13 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
+            .key_context("Workspace")
             .track_focus(&self.focus_handle)
             .bg(colors.base)
             .text_color(colors.text_primary)
             .text_size(px(text_size))
             .line_height(px(line_height))
+            .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::open))
@@ -1794,5 +1958,39 @@ impl Render for Workspace {
                 )
                 .with_priority(2)
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_preserves_symlinks() {
+        let dir = std::env::temp_dir().join(format!("org-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let real = dir.join("real.org");
+        write_atomic(&real, "* Initial\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "* Initial\n");
+
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.org");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            write_atomic(&link, "* Updated\n").unwrap();
+            assert!(link.is_symlink(), "symlink must not be replaced");
+            assert_eq!(std::fs::read_to_string(&real).unwrap(), "* Updated\n");
+        }
+
+        // No leftover temp files.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".org-tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
