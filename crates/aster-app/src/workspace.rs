@@ -73,6 +73,9 @@ pub struct Workspace {
     toast: Option<(SharedString, bool)>,
     toast_task: Option<Task<()>>,
     pub(crate) tree_menu: Option<TreeMenu>,
+    /// The open file's text as Aster last read or wrote it. The watcher reports Aster's own
+    /// saves too, sometimes after newer edits; matching this, they're not outside changes.
+    last_saved: Option<String>,
     /// The notebook switcher's open menu: the recent notebooks it lists.
     pub(crate) notebook_menu: Option<Vec<crate::session::RecentNotebook>>,
     pub(crate) name_dialog: Option<(Entity<NameDialog>, Subscription)>,
@@ -92,8 +95,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let last_saved = path.is_some().then(|| text.clone());
         let (editor, sub) = Self::make_editor(text, window, cx);
         let mut ws = Self {
+            last_saved,
             editor,
             path,
             dirty: false,
@@ -184,7 +189,15 @@ impl Workspace {
 
     /// The window title: just the open note's name.
     pub(crate) fn title(&self) -> String {
+        let in_root = |p: &Path| {
+            self.root
+                .as_deref()
+                .and_then(|r| p.strip_prefix(r).ok())
+                .and_then(Path::to_str)
+                .is_some_and(crate::sidebar::is_inbox)
+        };
         match (&self.path, self.sample) {
+            (Some(p), _) if in_root(p) => "Inbox".into(),
             (Some(p), _) => p
                 .file_stem()
                 .map_or(String::new(), |n| n.to_string_lossy().into_owned()),
@@ -222,6 +235,7 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = None;
+        self.last_saved = None;
         self.sample = false;
         self.sync_base_dir(cx);
         window.set_window_title(&self.title());
@@ -239,6 +253,7 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = None;
+        self.last_saved = None;
         self.sample = true;
         self.dirty = false;
         self.view = MainView::Editor;
@@ -759,6 +774,7 @@ impl Workspace {
         let text = self.editor.read(cx).text().to_owned();
         match write_atomic(&path, &text) {
             Ok(()) => {
+                self.last_saved = Some(text.clone());
                 self.dirty = false;
                 window.set_window_title(&self.title());
                 self.index.update(cx, |index, cx| {
@@ -891,6 +907,7 @@ impl Workspace {
             self.save_now(window, cx);
         }
         self.close_find_bar(window, cx);
+        self.last_saved = Some(text.clone());
         let (editor, sub) = Self::make_editor(text, window, cx);
         self.editor = editor;
         self._editor_subscription = sub;
@@ -1119,11 +1136,12 @@ impl Workspace {
         let Ok(disk) = read_org(&current) else {
             return; // deleted or unreadable: keep what's in the editor
         };
-        if disk == self.editor.read(cx).text() {
+        if disk == self.editor.read(cx).text() || self.last_saved.as_ref() == Some(&disk) {
             return; // our own save, or no real change
         }
         if !self.dirty {
             self.editor.update(cx, |e, cx| e.reload_text(&disk, cx));
+            self.last_saved = Some(disk);
             self.dirty = false;
             self.autosave = None;
             window.set_window_title(&self.title());
@@ -1147,6 +1165,7 @@ impl Workspace {
                 if choice == 1 {
                     if let Ok(disk) = read_org(&current) {
                         ws.editor.update(cx, |e, cx| e.reload_text(&disk, cx));
+                        ws.last_saved = Some(disk);
                     }
                     ws.dirty = false;
                     ws.autosave = None;

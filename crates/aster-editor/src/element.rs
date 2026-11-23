@@ -60,6 +60,8 @@ pub struct PrepaintState {
     tag_hits: Vec<(Bounds<Pixels>, usize)>,
     cursor: Option<PaintQuad>,
     wrap_updates: Vec<(u64, usize)>,
+    /// The layout matches the measured rows (nothing moved this frame).
+    settled: bool,
 }
 
 impl IntoElement for EditorElement {
@@ -634,6 +636,7 @@ impl Element for EditorElement {
                 fill(b, color)
             });
 
+        let mut redraw = false;
         // Keep the cursor visible after keyboard navigation or edits.
         if full
             && editor.autoscroll
@@ -649,13 +652,19 @@ impl Element for EditorElement {
             offset.y = offset.y.min(px(0.));
             if offset != editor.scroll_handle.offset() {
                 editor.scroll_handle.set_offset(offset);
-                window.refresh();
+                redraw = true;
             }
         }
 
         // Newly measured rows changed the document height: lay out again next frame.
-        if full && (total_height - bounds.size.height).abs() > px(0.5) {
-            window.refresh();
+        // A scroll brings new rows into view, whose measured heights can move the cursor again.
+        let height_changed = full && (total_height - bounds.size.height).abs() > px(0.5);
+        let settled = !redraw && !height_changed;
+        redraw |= !settled;
+        // `refresh` is ignored while drawing, so ask for the next frame instead (otherwise the
+        // change would only show on the next event, e.g. the cursor blinking).
+        if redraw {
+            window.on_next_frame(|window, _| window.refresh());
         }
 
         PrepaintState {
@@ -671,6 +680,7 @@ impl Element for EditorElement {
             tag_hits,
             cursor: cursor_quad,
             wrap_updates,
+            settled,
         }
     }
 
@@ -741,13 +751,18 @@ impl Element for EditorElement {
         let rows = std::mem::take(&mut prepaint.rows);
         let updates = std::mem::take(&mut prepaint.wrap_updates);
         let text_left = prepaint.text_left;
+        let settled = prepaint.settled;
         let tag_hits = std::mem::take(&mut prepaint.tag_hits);
         self.editor.update(cx, |editor, _| {
             if editor.wrap_cache.len() > 100_000 {
                 editor.wrap_cache.clear();
             }
             editor.wrap_cache.extend(updates);
-            editor.autoscroll = false;
+            // Until the layout settles, row positions (from estimated heights) can still move;
+            // keep scrolling the cursor into view until they stop.
+            if settled {
+                editor.autoscroll = false;
+            }
             editor.layout = Some(Layout {
                 bounds,
                 text_left,
