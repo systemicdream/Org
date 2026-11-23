@@ -11,6 +11,7 @@ use gpui::{
     Subscription, Window, anchored, deferred, div, prelude::*, px,
 };
 
+use crate::calendar::{Calendar, add_months};
 use crate::{EditorEvent, OrgEditor};
 use aster_ui::ActiveTheme;
 use aster_ui::icons::{Icon, icon};
@@ -256,12 +257,6 @@ fn slash_matches(query: &str) -> Vec<(SlashKind, &'static str)> {
 
 fn first_of_month(d: NaiveDate) -> NaiveDate {
     d.with_day(1).expect("day 1 exists")
-}
-
-fn add_months(d: NaiveDate, months: i32) -> NaiveDate {
-    let total = d.year() * 12 + d.month0() as i32 + months;
-    NaiveDate::from_ymd_opt(total.div_euclid(12), total.rem_euclid(12) as u32 + 1, 1)
-        .expect("valid month")
 }
 
 impl OrgEditor {
@@ -957,137 +952,47 @@ impl OrgEditor {
         clearable: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let today = dates::today();
-        let c = cx.theme().colors;
-        let title = month.format("%B %Y").to_string();
-        let lead = month.weekday().num_days_from_monday() as i64;
-        let grid_start = month - Duration::days(lead);
-        let nav = |id: &'static str, label: &'static str, delta: i32| {
-            div()
-                .id(id)
-                .px_2()
-                .rounded(aster_ui::RADIUS_CONTROL)
-                .cursor_pointer()
-                .hover(move |s| s.bg(c.subtle_secondary))
-                .child(label)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if let Some(Popup::Date {
-                            month, selected, ..
-                        }) = this.popup.as_mut()
-                        {
-                            *month = add_months(*month, delta);
-                            *selected = *month;
-                        }
-                        cx.notify();
-                    }),
-                )
+        let this = cx.entity().downgrade();
+        let on_month = {
+            let this = this.clone();
+            move |delta: i32, _: &mut Window, cx: &mut gpui::App| {
+                this.update(cx, |this, cx| {
+                    if let Some(Popup::Date {
+                        month, selected, ..
+                    }) = this.popup.as_mut()
+                    {
+                        *month = add_months(*month, delta);
+                        *selected = *month;
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
         };
-        let header = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_1()
-            .child(nav("date-prev", "‹", -1))
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
-            .child(nav("date-next", "›", 1));
-        let weekdays = div()
-            .flex()
-            .children(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|d| {
-                div()
-                    .w(px(32.))
-                    .text_center()
-                    .text_size(px(11.))
-                    .text_color(c.text_tertiary)
-                    .child(d)
-            }));
-        let weeks = (0..6).map(|w| {
-            div().flex().children((0..7).map(|d| {
-                let day = grid_start + Duration::days(w * 7 + d);
-                let in_month = day.month() == month.month();
-                let is_selected = day == selected;
-                let is_today = day == today;
-                div()
-                    .id(("day", (w * 7 + d) as usize))
-                    .w(px(32.))
-                    .h(px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(aster_ui::RADIUS_CONTROL)
-                    .cursor_pointer()
-                    .text_size(px(13.))
-                    .text_color(if is_selected {
-                        c.text_on_accent
-                    } else if in_month {
-                        c.text_primary
-                    } else {
-                        c.text_disabled
-                    })
-                    .when(is_selected, |s| s.bg(c.accent))
-                    .when(is_today && !is_selected, |s| {
-                        s.border_1().border_color(c.accent)
-                    })
-                    .when(!is_selected, |s| s.hover(move |s| s.bg(c.subtle_secondary)))
-                    .child(day.day().to_string())
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.pick_date(day, cx);
-                        }),
-                    )
-            }))
+        let on_pick = {
+            let this = this.clone();
+            move |d: NaiveDate, _: &mut Window, cx: &mut gpui::App| {
+                this.update(cx, |this, cx| this.pick_date(d, cx)).ok();
+            }
+        };
+        let on_clear = clearable.then(|| {
+            std::rc::Rc::new(move |_: (), _: &mut Window, cx: &mut gpui::App| {
+                this.update(cx, |this, cx| this.clear_date(cx)).ok();
+            }) as std::rc::Rc<dyn Fn((), &mut Window, &mut gpui::App)>
         });
-        let footer = div()
-            .flex()
-            .justify_between()
-            .pt_1()
-            .child(
-                div()
-                    .id("date-today")
-                    .px_2()
-                    .rounded(aster_ui::RADIUS_CONTROL)
-                    .cursor_pointer()
-                    .text_color(c.accent)
-                    .hover(move |s| s.bg(c.subtle_secondary))
-                    .child("Today")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.pick_date(today, cx);
-                        }),
-                    ),
-            )
-            .when(clearable, |f| {
-                f.child(
-                    div()
-                        .id("date-clear")
-                        .px_2()
-                        .rounded(aster_ui::RADIUS_CONTROL)
-                        .cursor_pointer()
-                        .text_color(c.critical)
-                        .hover(move |s| s.bg(c.subtle_secondary))
-                        .child("Clear")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.clear_date(cx);
-                            }),
-                        ),
-                )
-            });
         panel(cx)
             .p_2()
-            .text_size(px(14.))
-            .child(header)
-            .child(weekdays)
-            .children(weeks)
-            .child(footer)
+            .child(
+                Calendar {
+                    month,
+                    selected: Some(selected),
+                    today: dates::today(),
+                    on_month: std::rc::Rc::new(on_month),
+                    on_pick: std::rc::Rc::new(on_pick),
+                    on_clear,
+                }
+                .render(cx),
+            )
             .into_any_element()
     }
 }

@@ -502,11 +502,11 @@ impl Workspace {
             &dialog,
             window,
             |this, _, event: &CaptureEvent, window, cx| match event {
-                CaptureEvent::Capture(template, text) => {
-                    let (template, text) = (template.clone(), text.clone());
+                CaptureEvent::Capture(template, text, date) => {
+                    let (template, text, date) = (template.clone(), text.clone(), *date);
                     this.capture = None;
                     this.focus_main(window, cx);
-                    this.save_capture(template, &text, cx);
+                    this.save_capture(template, &text, date, cx);
                 }
                 CaptureEvent::Dismissed => {
                     this.capture = None;
@@ -519,7 +519,13 @@ impl Workspace {
         cx.notify();
     }
 
-    fn save_capture(&mut self, template: CaptureTemplate, text: &str, cx: &mut Context<Self>) {
+    fn save_capture(
+        &mut self,
+        template: CaptureTemplate,
+        text: &str,
+        date: Option<crate::capture::CaptureDate>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(root) = self.root.clone() else {
             return;
         };
@@ -537,7 +543,7 @@ impl Workspace {
         let at = CaptureTime::now();
         let result = self.edit_file(
             &root.join(&rel),
-            |doc| capture_op(doc, &template, text, &at),
+            |doc| capture_op(doc, &template, text, date, &at),
             cx,
         );
         match result {

@@ -8,6 +8,7 @@
 //! - search highlighting and replace, driven by [`FindBar`]
 //! - a single-line mode, used for the find bar's inputs
 
+pub mod calendar;
 mod element;
 mod find_bar;
 mod format_bar;
@@ -2408,12 +2409,24 @@ impl OrgEditor {
                 return true;
             }
         }
+        // A date shown as a label ("Due Fri, Nov 27") stands in for its text: a click anywhere
+        // on it is on the date.
+        let label = r
+            .display
+            .segments
+            .iter()
+            .find(|s| s.replaced && s.disp.start <= col && col < s.disp.end)
+            .map(|s| s.buf.clone());
         let timestamp = self
             .doc
             .decorations()
             .iter()
             .find(|d| {
-                d.kind == DecoKind::Timestamp && d.range.start <= offset && offset < d.range.end
+                d.kind == DecoKind::Timestamp
+                    && ((d.range.start <= offset && offset < d.range.end)
+                        || label
+                            .as_ref()
+                            .is_some_and(|l| l.start <= d.range.start && d.range.end <= l.end))
             })
             .map(|d| d.range.clone());
         if let Some(range) = timestamp

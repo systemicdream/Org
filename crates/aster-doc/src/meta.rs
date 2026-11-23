@@ -127,7 +127,7 @@ pub enum Planning {
 }
 
 impl Planning {
-    fn keyword(self) -> &'static str {
+    pub fn keyword(self) -> &'static str {
         match self {
             Planning::Scheduled => "SCHEDULED:",
             Planning::Deadline => "DEADLINE:",
