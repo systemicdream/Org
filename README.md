@@ -1,15 +1,15 @@
-# Aster
+# Org
 
 **Notes, to-dos and plans in plain Org files, without learning Emacs.**
 
-Aster is a desktop notes app for macOS and Linux built on [Org mode](https://orgmode.org/). Your
+Org is a desktop notes app for macOS and Linux built on [Org mode](https://orgmode.org/). Your
 notes stay plain `.org` text files in a folder you choose: open them in any editor (Emacs
-included), and sync them with any service you like. Aster gives them a modern, discoverable
+included), and sync them with any service you like. Org gives them a modern, discoverable
 editor with an agenda, quick capture and refile.
 
-![Aster showing an Org file with to-dos, a deadline, a checklist and a table, next to a sidebar of files and tags](docs/images/screenshot.png)
+![Org showing a note with to-dos, a deadline, a checklist and a table, next to a sidebar of files and tags](docs/images/screenshot.png)
 
-> **Early development (0.1.0).** Aster works for everyday notes, but expect rough edges, and
+> **Early development (0.1.0).** Org works for everyday notes, but expect rough edges, and
 > keep a backup of notes you care about. Versions stay at 0.x until it has seen real use; see
 > [CHANGELOG.md](CHANGELOG.md) for what's in each release.
 
@@ -20,12 +20,12 @@ editor with an agenda, quick capture and refile.
 - **Headings and lists:** fold, promote, demote and drag headings with their children; tables
   that align themselves; syntax-highlighted code blocks; inline images.
 - **Tasks:** TODO states, priorities, tags, scheduled dates and deadlines, set from menus and a
-  date picker, or typed as Org.
+  date picker, or typed as Org mode syntax.
 - **Agenda:** what's scheduled, due and dated across your notes folder, by day or week, plus a
   list of open to-dos and Org tag/property searches.
 - **Capture, refile, archive:** add a task, note or journal entry from anywhere, and move
   headings between files.
-- **Your folder, your files:** Aster watches the folder, so changes from Emacs or a sync service
+- **Your folder, your files:** Org watches the folder, so changes from Emacs or a sync service
   show up straight away. It stores nothing in your notes folder.
 - **Discoverable:** a command palette lists every command with its shortcut, and a slash menu
   inserts headings, to-dos, tables, dates and more. Optional Emacs and Vim keys.
@@ -33,38 +33,38 @@ editor with an agenda, quick capture and refile.
 ## Installing
 
 Download the package for your system from the
-[latest release](https://github.com/systemicdream/Aster/releases/latest):
+[latest release](https://github.com/systemicdream/Org/releases/latest):
 
 | System | Package | Install |
 |---|---|---|
-| macOS 11+ (Apple silicon, Intel) | `Aster-<version>-macos-universal.dmg` | Drag Aster to Applications (first launch: see below) |
-| Linux (any distribution) | `Aster-<version>-x86_64.flatpak` | `flatpak install --user Aster-<version>-x86_64.flatpak` |
-| Debian 12+, Ubuntu 22.04+ | `aster_<version>_amd64.deb` | `sudo apt install ./aster_<version>_amd64.deb` |
-| Fedora | `aster-<version>-1.x86_64.rpm` | `sudo dnf install ./aster-<version>-1.x86_64.rpm` |
-| Other Linux | `aster-<version>-linux-x86_64.tar.gz` | Extract, then `./install.sh` |
+| macOS 11+ (Apple silicon, Intel) | `Org-<version>-macos-universal.dmg` | Drag Org to Applications (first launch: see below) |
+| Linux (any distribution) | `Org-<version>-x86_64.flatpak` | `flatpak install --user Org-<version>-x86_64.flatpak` |
+| Debian 12+, Ubuntu 22.04+ | `org_<version>_amd64.deb` | `sudo apt install ./org_<version>_amd64.deb` |
+| Fedora | `org-<version>-1.x86_64.rpm` | `sudo dnf install ./org-<version>-1.x86_64.rpm` |
+| Other Linux | `org-<version>-linux-x86_64.tar.gz` | Extract, then `./install.sh` |
 
 `SHA256SUMS` in each release lets you check your download.
 
-**macOS, first launch:** Aster isn't notarized by Apple yet, so macOS stops it the first time.
+**macOS, first launch:** Org isn't notarized by Apple yet, so macOS stops it the first time.
 Open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
-**Linux:** Aster needs a Wayland session (X11 isn't supported). The Flatpak is the recommended
+**Linux:** Org needs a Wayland session (X11 isn't supported). The Flatpak is the recommended
 package; it isn't on Flathub yet, so install new versions by downloading them the same way.
 
 **Windows** isn't supported yet.
 
 ### Updates and privacy
 
-Aster checks GitHub once a day for a new version and tells you when there is one (turn this off
-in Settings → About). The request carries only Aster's version, nothing about you or your notes.
+Org checks GitHub once a day for a new version and tells you when there is one (turn this off
+in Settings → About). The request carries only Org's version, nothing about you or your notes.
 
-If Aster crashes, it keeps a report on your computer and offers to open a GitHub issue with it
+If Org crashes, it keeps a report on your computer and offers to open a GitHub issue with it
 the next time it starts. You see the report before anything is sent, and nothing is sent unless
 you choose to.
 
 ## Getting started
 
-Open Aster and pick a folder for your notes (or an existing folder of `.org` files). The sidebar
+Open Org and pick a folder for your notes (or an existing folder of `.org` files). The sidebar
 lists its files and tags. A few shortcuts to start with (Cmd on macOS, Ctrl on Linux):
 
 | Keys | Action |
@@ -124,45 +124,45 @@ In the agenda: `j`/`k` move, Enter opens, `x` marks done, `d`/`w`/`t`/`s` switch
 
 </details>
 
-## How Aster works with your files
+## How Org works with your files
 
-- **Plain Org, always.** Aster reads and writes ordinary Org syntax, so a file looks the same in
-  Emacs. Saves are atomic (written to a temporary file, then swapped in).
-- **Changes from elsewhere.** If a file you have unsaved edits in changes on disk, Aster asks
+- **Plain Org files, always.** The app reads and writes ordinary Org mode syntax, so a file
+  looks the same in Emacs. Saves are atomic (written to a temporary file, then swapped in).
+- **Changes from elsewhere.** If a file you have unsaved edits in changes on disk, Org asks
   which version to keep. Sync-conflict copies are marked ⚠.
 - **Links across files.** `id:` links and `file:other.org::*Heading` links work across the
   folder.
 - **Agenda files.** Capture adds to `inbox.org`, or a timestamped entry under today in
-  `journal.org`. Archive moves a heading to `<file>_archive` with Org's archive properties.
+  `journal.org`. Archive moves a heading to `<file>_archive` with Org mode's archive properties.
 - **Startup folding.** A file with `#+STARTUP: overview` opens with every heading folded.
 
 ## Reporting problems
 
-Found a bug or something confusing? [Open an issue](https://github.com/systemicdream/Aster/issues)
-(Settings → About → **Report a problem** fills in your Aster version and system for you).
+Found a bug or something confusing? [Open an issue](https://github.com/systemicdream/Org/issues)
+(Settings → About → **Report a problem** fills in your Org version and system for you).
 
 ## Building from source
 
-Aster is written in Rust with [GPUI](https://www.gpui.rs/). You need Rust (the version is pinned
+Org is written in Rust with [GPUI](https://www.gpui.rs/). You need Rust (the version is pinned
 in `rust-toolchain.toml`; rustup installs it automatically).
 
 - **macOS:** Xcode command line tools.
 - **Linux (Wayland):** `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev
   libfreetype-dev libvulkan-dev pkg-config` on Debian/Ubuntu, or `libxkbcommon-devel
   libxkbcommon-x11-devel wayland-devel fontconfig-devel freetype-devel vulkan-loader-devel` on
-  Fedora. (`libxkbcommon-x11` is only needed to link; Aster doesn't use X11.)
+  Fedora. (`libxkbcommon-x11` is only needed to link; Org doesn't use X11.)
 
 ```sh
-cargo run -p aster-app                     # reopens your last folder/file, or the welcome screen
-cargo run -p aster-app -- ~/notes          # open a folder of .org files
-cargo run -p aster-app -- path/to/notes.org
+cargo run -p org-app                     # reopens your last folder/file, or the welcome screen
+cargo run -p org-app -- ~/notes          # open a folder of .org files
+cargo run -p org-app -- path/to/notes.org
 cargo test --workspace
 ```
 
 To install your build:
 
 ```sh
-scripts/bundle-macos.sh     # macOS: builds target/release/Aster.app (drag it to /Applications)
+scripts/bundle-macos.sh     # macOS: builds target/release/Org.app (drag it to /Applications)
 scripts/install-linux.sh    # Linux: installs to ~/.local/bin with a launcher entry and icon
 ```
 
@@ -175,4 +175,4 @@ More for contributors:
 
 ## License
 
-Aster is released under the [MIT License](LICENSE).
+Org is released under the [MIT License](LICENSE).

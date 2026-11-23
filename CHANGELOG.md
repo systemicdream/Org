@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to Aster are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Aster uses
-[Semantic Versioning](https://semver.org/): while the version is 0.x, Aster is in early
+All notable changes to Org are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Org uses
+[Semantic Versioning](https://semver.org/): while the version is 0.x, Org is in early
 development and any release may change things.
 
 ## [Unreleased]
@@ -41,5 +41,5 @@ The first release.
 - A daily check for new versions (can be turned off), and local crash reports that you can
   choose to send as a GitHub issue.
 
-[Unreleased]: https://github.com/systemicdream/Aster/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/systemicdream/Aster/releases/tag/v0.1.0
+[Unreleased]: https://github.com/systemicdream/Org/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/systemicdream/Org/releases/tag/v0.1.0

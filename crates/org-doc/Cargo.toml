@@ -1,0 +1,12 @@
+[package]
+name = "org-doc"
+description = "Document model for Org: edits, undo/redo, structural Org operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+org-syntax.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+chrono.workspace = true

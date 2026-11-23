@@ -11,7 +11,7 @@ The editor is the product. Options: build on GPUI primitives (`Element`, `Shaped
 
 ## Findings
 
-The spike in `crates/aster-editor` (~1,000 lines) implements, on raw GPUI 0.2.2:
+The spike in `crates/org-editor` (~1,000 lines) implements, on raw GPUI 0.2.2:
 multi-line layout, cursor and keyboard/mouse selection, vertical movement with goal column,
 clipboard, CRLF-preserving newlines, IME (marked text, character palette, candidate-window
 bounds), auto-scroll to cursor, and styling driven by the Org syntax tree.
@@ -21,14 +21,14 @@ control of layout and hit-testing, which a generic code-editor component would f
 
 ## Decision
 
-Build Aster's editor directly on GPUI primitives. Use `gpui-component` selectively for
+Build Org's editor directly on GPUI primitives. Use `gpui-component` selectively for
 non-editor UI (lists, popovers, inputs in dialogs) if it earns its place — evaluate in Phase 4/5.
 
 ## Known gaps to close in Phase 2
 
 All closed except the rope (deferred, see ADR 0003):
 
-- ~~Rope buffer~~ (deferred) + undo/redo transactions (`aster-doc`, Phase 1)
+- ~~Rope buffer~~ (deferred) + undo/redo transactions (`org-doc`, Phase 1)
 - Soft wrap (`shape_text` / `WrappedLine`) and virtualized layout (Phase 2)
 - Word movement, double/triple-click selection, cursor blink (Phase 2)
 - Variable line heights for heading sizes (Phase 2)

@@ -5,12 +5,12 @@
 
 ## Context
 
-The plan called for a rope (`ropey` or Zed's `rope`) in `aster-doc`. A rope makes edits in the
+The plan called for a rope (`ropey` or Zed's `rope`) in `org-doc`. A rope makes edits in the
 middle of large documents O(log n) instead of O(n).
 
 ## Decision
 
-Store the document as a plain `String` behind `aster_doc::Document` for now.
+Store the document as a plain `String` behind `org_doc::Document` for now.
 
 Every edit already does O(n) work elsewhere: the full reparse (ADR 0001), recomputing line
 starts, and reshaping every line on paint. A rope would not change the cost of an edit until
@@ -18,7 +18,7 @@ those are incremental too, while it would complicate the editor (graphemes, UTF-
 IME, and slicing all assume `&str`).
 
 All mutation goes through `Transaction`s and `Document::apply`, so swapping the storage later
-is contained to `aster-doc` plus the editor's read paths.
+is contained to `org-doc` plus the editor's read paths.
 
 ## Revisit when
 

@@ -10,7 +10,7 @@ Phase 5 needs a workspace index for the file tree, quick switcher, full-text sea
 
 ## Decision
 
-Keep the index in memory (`aster-index`): scan every `.org` file under the workspace folder at
+Keep the index in memory (`org-index`): scan every `.org` file under the workspace folder at
 startup, keep each file's text and parsed headings, and update single files when the editor saves
 or the file watcher reports a change. Search scans the in-memory text.
 

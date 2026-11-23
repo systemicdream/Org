@@ -175,85 +175,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aster-agenda"
-version = "0.1.0"
-dependencies = [
- "aster-index",
- "chrono",
-]
-
-[[package]]
-name = "aster-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ashpd 0.11.1",
- "aster-agenda",
- "aster-doc",
- "aster-editor",
- "aster-index",
- "aster-ui",
- "chrono",
- "dirs 7.0.0",
- "futures",
- "gpui",
- "notify",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "serde",
- "serde_json",
- "trash",
- "ureq",
-]
-
-[[package]]
-name = "aster-doc"
-version = "0.1.0"
-dependencies = [
- "aster-org",
- "chrono",
- "unicode-segmentation",
- "unicode-width",
-]
-
-[[package]]
-name = "aster-editor"
-version = "0.1.0"
-dependencies = [
- "aster-doc",
- "aster-org",
- "aster-ui",
- "chrono",
- "gpui",
- "syntect",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "aster-index"
-version = "0.1.0"
-dependencies = [
- "aster-doc",
- "aster-org",
- "chrono",
-]
-
-[[package]]
-name = "aster-org"
-version = "0.1.0"
-dependencies = [
- "orgize-ng",
-]
-
-[[package]]
-name = "aster-ui"
-version = "0.1.0"
-dependencies = [
- "gpui",
-]
-
-[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3840,6 +3761,85 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "org-agenda"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "org-index",
+]
+
+[[package]]
+name = "org-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ashpd 0.11.1",
+ "chrono",
+ "dirs 7.0.0",
+ "futures",
+ "gpui",
+ "notify",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "org-agenda",
+ "org-doc",
+ "org-editor",
+ "org-index",
+ "org-ui",
+ "serde",
+ "serde_json",
+ "trash",
+ "ureq",
+]
+
+[[package]]
+name = "org-doc"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "org-syntax",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
+name = "org-editor"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gpui",
+ "org-doc",
+ "org-syntax",
+ "org-ui",
+ "syntect",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "org-index"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "org-doc",
+ "org-syntax",
+]
+
+[[package]]
+name = "org-syntax"
+version = "0.1.0"
+dependencies = [
+ "orgize-ng",
+]
+
+[[package]]
+name = "org-ui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
 ]
 
 [[package]]

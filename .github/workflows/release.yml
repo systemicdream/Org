@@ -120,7 +120,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         # A draft: check it over, then publish it on GitHub. Not marked as a pre-release, so
-        # Aster's update check (which asks for the latest release) finds it.
+        # Org's update check (which asks for the latest release) finds it.
         run: |
           gh release create "v$VERSION" dist/* --draft --verify-tag \
-            --title "Aster $VERSION" --notes-file notes.md
+            --title "Org $VERSION" --notes-file notes.md
