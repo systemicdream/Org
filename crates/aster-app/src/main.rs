@@ -11,6 +11,7 @@ mod file_actions;
 mod files;
 mod keymap;
 mod name_dialog;
+mod notebooks;
 mod notices;
 mod picker;
 mod release;

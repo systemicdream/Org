@@ -3,9 +3,10 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use aster_ui::components::ButtonKind;
 use aster_ui::icons::{Icon, icon};
 use aster_ui::{ActiveTheme, components, ramp};
-use gpui::{Context, MouseButton, SharedString, div, prelude::*, px};
+use gpui::{Context, MouseButton, div, prelude::*, px};
 
 use crate::agenda_view::Mode;
 use crate::file_actions::TreeTarget;
@@ -115,6 +116,61 @@ fn view_row(
 }
 
 impl Workspace {
+    /// The sidebar before a notes folder is open (e.g. while looking at the sample): what it
+    /// will hold, and how to get there.
+    pub(crate) fn render_folderless_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = cx.theme().colors;
+        div()
+            .id("sidebar")
+            .w(px(260.))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .px_4()
+            .text_size(ramp::BODY.size)
+            .line_height(ramp::BODY.line_height)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("No notes folder yet"),
+            )
+            .child(
+                div().text_color(c.text_secondary).child(
+                    "Choose a folder for your notes to see its files, tags and agenda here.",
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        components::button(
+                            "sidebar-create",
+                            "Create a notes folder…",
+                            ButtonKind::Accent,
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(|ws, _, window, cx| ws.create_notes_folder(window, cx)),
+                        ),
+                    )
+                    .child(
+                        components::button(
+                            "sidebar-open",
+                            "Open an existing folder…",
+                            ButtonKind::Standard,
+                            cx,
+                        )
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(crate::OpenFolder), cx)
+                        }),
+                    ),
+            )
+    }
+
     /// The navigation pane (docs/DESIGN.md §7, §11): views, the file tree and tags, on the base
     /// layer, with Fluent list rows and the accent selection indicator.
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -139,6 +195,10 @@ impl Workspace {
             )
             .into_any_element(),
         ];
+        let header = self
+            .root
+            .as_ref()
+            .map(|r| self.render_notebook_header(r, cx));
         let colors = cx.theme().colors;
         let index = self.index.read(cx);
         let files: Vec<(String, PathBuf, bool)> = index
@@ -147,11 +207,6 @@ impl Workspace {
             .collect();
         let rows = build_tree(&files, &index.dirs(), &self.expanded);
         let tags = index.tags();
-        let root_name = self
-            .root
-            .as_ref()
-            .and_then(|r| r.file_name())
-            .map_or("Notes".to_string(), |n| n.to_string_lossy().into_owned());
         let current = self.path.clone().filter(|_| self.editor_visible());
         let root = self.root.clone();
 
@@ -203,15 +258,18 @@ impl Workspace {
                     _ => TreeTarget::Root,
                 };
                 components::list_item(("tree-row", i), selected, cx)
-                    .pl(px(12. + 16. * row.depth as f32))
+                    .pl(px(12. + 18. * row.depth as f32))
                     .text_color(color)
                     .gap_1p5()
-                    .child(
-                        div()
-                            .w(px(12.))
-                            .flex_shrink_0()
-                            .children(chevron.map(|c| icon(c, px(12.), colors.text_secondary))),
-                    )
+                    // Only folders have a chevron; files line up with the rows above (and,
+                    // inside a folder, with its icon).
+                    .children(chevron.map(|c| {
+                        div().w(px(12.)).flex_shrink_0().child(icon(
+                            c,
+                            px(12.),
+                            colors.text_secondary,
+                        ))
+                    }))
                     .child(icon(
                         kind_icon,
                         px(16.),
@@ -285,15 +343,7 @@ impl Workspace {
             .flex_col()
             .text_size(ramp::BODY.size)
             .line_height(ramp::BODY.line_height)
-            .child(
-                div()
-                    .px_4()
-                    .pb_1()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(root_name)),
-            )
+            .children(header)
             .child(
                 div()
                     .id("sidebar-scroll")

@@ -73,6 +73,8 @@ pub struct Workspace {
     toast: Option<(SharedString, bool)>,
     toast_task: Option<Task<()>>,
     pub(crate) tree_menu: Option<TreeMenu>,
+    /// The notebook switcher's open menu: the recent notebooks it lists.
+    pub(crate) notebook_menu: Option<Vec<crate::session::RecentNotebook>>,
     pub(crate) name_dialog: Option<(Entity<NameDialog>, Subscription)>,
     /// The welcome sample is showing (unsaved, not a file).
     sample: bool,
@@ -115,6 +117,7 @@ impl Workspace {
             toast: None,
             toast_task: None,
             tree_menu: None,
+            notebook_menu: None,
             name_dialog: None,
             sample: false,
             focus_handle: cx.focus_handle(),
@@ -179,26 +182,15 @@ impl Workspace {
         (editor, sub)
     }
 
+    /// The window title: just the open note's name.
     pub(crate) fn title(&self) -> String {
-        let name = match (&self.path, self.sample) {
-            (Some(p), _) => p.file_name().map(|n| n.to_string_lossy().into_owned()),
-            (None, true) => Some("Welcome (sample)".into()),
-            (None, false) => None,
-        };
-        let folder = self
-            .root
-            .as_deref()
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().into_owned());
-        let parts: Vec<String> = name.into_iter().chain(folder).collect();
-        if parts.is_empty() {
-            return "Aster".into();
+        match (&self.path, self.sample) {
+            (Some(p), _) => p
+                .file_stem()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+            (None, true) => "Welcome".into(),
+            (None, false) => "Aster".into(),
         }
-        format!(
-            "{}{} — Aster",
-            if self.dirty { "● " } else { "" },
-            parts.join(" — ")
-        )
     }
 
     /// Drop a pending autosave (the edits stay in the editor, marked unsaved).
@@ -257,11 +249,9 @@ impl Workspace {
     }
 
     pub(crate) fn save_session(&self) {
-        Session {
-            root: self.root.clone(),
-            file: self.path.clone(),
-        }
-        .save();
+        let mut session = Session::load();
+        session.remember(self.root.clone(), self.path.clone());
+        session.save();
     }
 
     // ---- messages -------------------------------------------------------------------------
@@ -870,7 +860,7 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            this.update_in(cx, |ws, window, cx| ws.set_root(path, window, cx))
+            this.update_in(cx, |ws, window, cx| ws.switch_notebook(path, window, cx))
                 .ok();
         })
         .detach();
@@ -1023,6 +1013,14 @@ impl Workspace {
     /// Use `root` as the notes folder: scan it in the background and watch it for changes.
     pub(crate) fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let root = std::fs::canonicalize(&root).unwrap_or(root);
+        if self.root.as_ref().is_some_and(|r| *r != root) {
+            // Another notebook: don't show the previous one's files while scanning.
+            self.index.update(cx, |i, cx| {
+                *i = Index::default();
+                cx.notify();
+            });
+            self.expanded.clear();
+        }
         self.root = Some(root.clone());
         self.scanning = true;
         self.sidebar_open = true;
@@ -1505,10 +1503,14 @@ const TITLE_BAR_HEIGHT: f32 = 38.;
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let sidebar = if self.sidebar_open && self.root.is_some() {
-            Some(self.render_sidebar(cx).into_any_element())
-        } else {
-            None
+        // Without a folder (the sample, or nothing open) the sidebar explains how to get one;
+        // not on the welcome screen, which already does.
+        let sidebar = match (self.sidebar_open, &self.root) {
+            (true, Some(_)) => Some(self.render_sidebar(cx).into_any_element()),
+            (true, None) if self.has_document() => {
+                Some(self.render_folderless_sidebar(cx).into_any_element())
+            }
+            _ => None,
         };
         let has_sidebar = sidebar.is_some();
         // The command bar (docs/DESIGN.md §11). On macOS it's the transparent title bar (traffic
@@ -1722,6 +1724,7 @@ impl Render for Workspace {
                 .with_priority(2)
             }))
             .children(self.render_tree_menu(cx))
+            .children(self.render_notebook_menu(TITLE_BAR_HEIGHT + 32., cx))
             .children(self.toast.clone().map(|(msg, error)| {
                 // InfoBar-style toast (docs/DESIGN.md §7).
                 let theme = cx.theme();
