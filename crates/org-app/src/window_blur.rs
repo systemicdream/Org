@@ -14,14 +14,36 @@
 const RADIUS: i64 = 40;
 
 #[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGSMainConnectionID() -> *mut std::ffi::c_void;
-    fn CGSSetWindowBackgroundBlurRadius(
-        connection: *mut std::ffi::c_void,
-        window: isize,
-        radius: i64,
-    ) -> i32;
+type CgsMainConnectionId = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+#[cfg(target_os = "macos")]
+type CgsSetWindowBackgroundBlurRadius =
+    unsafe extern "C" fn(*mut std::ffi::c_void, isize, i64) -> i32;
+
+/// Look up the private CoreGraphics blur functions dynamically so a future macOS release
+/// that removes them falls back to GPUI's built-in effect view instead of failing at launch.
+#[cfg(target_os = "macos")]
+fn cgs_blur_fns() -> Option<(CgsMainConnectionId, CgsSetWindowBackgroundBlurRadius)> {
+    use std::ffi::{c_char, c_void};
+    use std::sync::OnceLock;
+
+    const RTLD_DEFAULT: *mut c_void = (-2isize) as *mut c_void;
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    static FNS: OnceLock<Option<(CgsMainConnectionId, CgsSetWindowBackgroundBlurRadius)>> =
+        OnceLock::new();
+    *FNS.get_or_init(|| unsafe {
+        let conn = dlsym(RTLD_DEFAULT, c"CGSMainConnectionID".as_ptr());
+        let set_blur = dlsym(RTLD_DEFAULT, c"CGSSetWindowBackgroundBlurRadius".as_ptr());
+        if conn.is_null() || set_blur.is_null() {
+            return None;
+        }
+        Some((
+            std::mem::transmute::<*mut c_void, CgsMainConnectionId>(conn),
+            std::mem::transmute::<*mut c_void, CgsSetWindowBackgroundBlurRadius>(set_blur),
+        ))
+    })
 }
 
 /// Match every window's blur to `blurred` (whether the window background is translucent).
@@ -32,6 +54,9 @@ pub fn sync(blurred: bool) {
     use objc2::runtime::{AnyObject, Bool};
     use objc2_app_kit::NSApplication;
 
+    let Some((main_connection_id, set_blur_radius)) = cgs_blur_fns() else {
+        return;
+    };
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
@@ -56,8 +81,8 @@ pub fn sync(blurred: bool) {
                 }
             }
             let number: isize = msg_send![window, windowNumber];
-            CGSSetWindowBackgroundBlurRadius(
-                CGSMainConnectionID(),
+            set_blur_radius(
+                main_connection_id(),
                 number,
                 if blurred { RADIUS } else { 0 },
             );

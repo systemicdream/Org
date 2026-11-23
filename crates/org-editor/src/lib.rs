@@ -2551,6 +2551,7 @@ impl OrgEditor {
         let row = self.row_for_offset(offset);
         let start = self.line_starts[row];
         if self.heading_level(row).is_some() {
+            window.focus(&self.focus_handle);
             // At the pointer, like other context menus.
             let at =
                 popup::PopupAnchor::below(Bounds::new(event.position, gpui::size(px(0.), px(0.))));

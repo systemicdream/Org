@@ -361,12 +361,12 @@ impl OrgEditor {
     // ---- mode changes ----------------------------------------------------------------------
 
     fn vim_normal_mode(&mut self, _: &NormalMode, window: &mut Window, cx: &mut Context<Self>) {
+        // Escape closes any open editor popup first (menus, date picker, slash menu, tag input).
+        if self.popup_key(crate::NavKey::Escape, window, cx) {
+            return;
+        }
         match self.vim.mode {
             VimMode::Insert => {
-                // Escape closes a menu first (slash menu, completion), as it would anyway.
-                if self.popup_key(crate::NavKey::Escape, window, cx) {
-                    return;
-                }
                 let cursor = self.cursor_offset();
                 let line = self.vim_line();
                 if cursor > line.start {

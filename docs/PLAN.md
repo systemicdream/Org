@@ -115,17 +115,17 @@ org-app ──► org-editor ──► org-doc ──► org-syntax
 
 | Concern | Choice | Notes |
 |---|---|---|
-| UI framework | `gpui` | Pin an exact version / git rev. Zed's source is the de-facto documentation. |
-| Components | Evaluate `gpui-component` | Inputs, lists, virtualized tables, dock, popovers; reference for a multi-line editor. |
-| Text buffer | `ropey` (or Zed's `rope`/`sum_tree`) | Zed's `editor` crate is too coupled to Zed to reuse. |
-| Org parsing | Start with `orgize` 0.10 (rowan, lossless) behind an internal trait | Replace with a hand-written section-incremental parser if fidelity or perf falls short. |
-| Code highlighting | `tree-sitter` + grammars | Src blocks only. |
-| Index / search | `rusqlite` with FTS5 (alt: `tantivy`) | Stored in app cache dir, never next to user files. |
-| File watching | `notify` | Reload clean buffers; conflict UI for dirty buffers. |
-| Dates | `jiff` or `chrono` | Repeaters, agenda ranges, time zones. |
-| Settings / state | `serde` + TOML/JSON in platform config dir | Edited through the settings UI. |
-| Packaging | `cargo-packager` | `.dmg` (signed + notarized), AppImage/`.deb`/Flatpak; `.msi` once Windows is picked up. |
-| CI | GitHub Actions on macOS and Linux | From week one. Windows added when it is picked up. |
+| UI framework | `gpui` | Pinned exact version (`=0.2.2`). Zed's source is the de-facto documentation. |
+| Components | Custom `org-ui` on raw GPUI | Fluent-inspired tokens and controls ([DESIGN.md](DESIGN.md), [0002](decisions/0002-editor-foundation.md)). |
+| Text buffer | Plain `String` behind `org-doc::Document` | Simple and fast enough for typical notes; rope later if needed ([0003](decisions/0003-text-storage.md)). |
+| Org parsing | `orgize-ng` behind `org-syntax::OrgTree` | Lossless full reparse ([0001](decisions/0001-org-parser.md)). |
+| Code highlighting | `syntect` (pure Rust `regex-fancy`) | Src blocks only, cached per block. |
+| Index / search | In-memory `org-index` | Rebuilt from files at startup; nothing written into the notes folder ([0004](decisions/0004-workspace-index.md)). |
+| File watching | `notify` | Reload clean buffers; conflict prompt for dirty buffers. |
+| Dates | `chrono` | Repeaters, warning periods, agenda ranges. |
+| Settings / state | `serde` + JSON in platform config/data dir | Edited through the settings UI. |
+| Packaging | Custom shell scripts (`scripts/`) | `.dmg` (universal, ad-hoc signed), Flatpak, `.deb`, `.rpm`, tarball. |
+| CI | GitHub Actions on macOS and Linux | `ci.yml` + `release.yml`. Windows added when it is picked up. |
 
 ---
 
