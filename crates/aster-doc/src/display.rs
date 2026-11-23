@@ -34,8 +34,21 @@ impl RowDisplay {
         decorations: impl IntoIterator<Item = &'a Decoration>,
         revealed: impl Fn(&Decoration) -> bool,
     ) -> Self {
+        Self::build_with(doc, line, decorations, revealed, Vec::new())
+    }
+
+    /// Like [`build`](Self::build), plus `extra` edits: buffer ranges hidden (`None`) or shown
+    /// as other text (e.g. a date as "Due Fri, Nov 27"). Where edits overlap, the one starting
+    /// first wins, and `extra` wins over decorations starting at the same place.
+    pub fn build_with<'a>(
+        doc: &str,
+        line: Range<usize>,
+        decorations: impl IntoIterator<Item = &'a Decoration>,
+        revealed: impl Fn(&Decoration) -> bool,
+        extra: Vec<(Range<usize>, Option<String>)>,
+    ) -> Self {
         // (range, replacement) edits within the line, sorted, non-overlapping.
-        let mut edits: Vec<(Range<usize>, Option<&'static str>)> = Vec::new();
+        let mut edits: Vec<(Range<usize>, Option<String>)> = extra;
         for d in decorations {
             if revealed(d) {
                 continue;
@@ -44,7 +57,7 @@ impl RowDisplay {
                 edits.push((h.clone(), None));
             }
             if let Some((r, glyph)) = &d.replace {
-                edits.push((r.clone(), Some(*glyph)));
+                edits.push((r.clone(), Some((*glyph).to_string())));
             }
         }
         let mut edits: Vec<_> = edits
@@ -76,7 +89,7 @@ impl RowDisplay {
             push_text(&mut text, &mut segments, pos..r.start);
             if let Some(g) = glyph {
                 let d = text.len();
-                text.push_str(g);
+                text.push_str(&g);
                 segments.push(Segment {
                     disp: d..text.len(),
                     buf: r.clone(),

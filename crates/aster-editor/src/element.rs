@@ -18,6 +18,7 @@ use gpui::{
 
 use aster_ui::icons::Icon;
 
+use crate::spans::Decor;
 use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout};
 
 /// Width of the fold-arrow gutter left of the text.
@@ -30,6 +31,10 @@ const IMAGE_PADDING: Pixels = px(6.);
 
 /// Extra rows shaped above and below the viewport, so scrolling a little needs no reshaping.
 const OVERSCAN_LINES: f32 = 8.;
+
+/// Widest text column, in multiples of the text size (about 80 characters of body text): long
+/// lines are hard to read, so wide windows get margins instead.
+const MAX_COLUMN_EMS: f32 = 46.;
 
 pub struct EditorElement {
     editor: Entity<OrgEditor>,
@@ -52,6 +57,7 @@ pub struct PrepaintState {
     selections: Vec<PaintQuad>,
     glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
     icons: Vec<(Bounds<Pixels>, Icon, gpui::Hsla)>,
+    tag_hits: Vec<(Bounds<Pixels>, usize)>,
     cursor: Option<PaintQuad>,
     wrap_updates: Vec<(u64, usize)>,
 }
@@ -92,7 +98,8 @@ impl Element for EditorElement {
                 editor
                     .visible_rows
                     .iter()
-                    .map(|&row| {
+                    .enumerate()
+                    .map(|(i, &row)| {
                         let scale = editor.row_scale(row);
                         let key =
                             editor.wrap_key(row, scale, editor.row_wrap_width(row, wrap_width));
@@ -101,7 +108,9 @@ impl Element for EditorElement {
                             .row_wrap_width(row, wrap_width)
                             .and_then(|w| editor.image_display_size(row, w))
                             .map_or(px(0.), |s| s.height + IMAGE_PADDING * 2.);
-                        line_height * scale * lines as f32 + image
+                        editor.space_above(i, line_height)
+                            + line_height * scale * lines as f32
+                            + image
                     })
                     .fold(px(0.), |a, b| a + b)
             }
@@ -126,7 +135,15 @@ impl Element for EditorElement {
         let line_height = window.line_height();
         let full = self.editor.read(cx).mode == EditorMode::Full;
         let gutter = if full { gutter() } else { px(0.) };
-        let text_left = bounds.left() + gutter;
+        let available = (bounds.size.width - gutter).max(px(80.));
+        let column = if full {
+            available.min(font_size * MAX_COLUMN_EMS)
+        } else {
+            available
+        };
+        // Centered in the editor when the window is wider than the column.
+        let text_left = bounds.left() + gutter + ((available - column) / 2.).max(px(0.));
+        let text_right = text_left + column;
         let mono_family = self.editor.read(cx).mono_family.clone().unwrap_or_else(|| {
             let family = pick_monospace(window);
             self.editor
@@ -138,7 +155,7 @@ impl Element for EditorElement {
             mono_family,
             font_size,
             color: style.color,
-            wrap_width: full.then(|| (bounds.size.width - gutter).max(px(80.))),
+            wrap_width: full.then_some(column),
         };
         self.editor
             .update(cx, |e, _| e.metrics = Some(metrics.clone()));
@@ -186,7 +203,8 @@ impl Element for EditorElement {
         let mut rows = Vec::with_capacity(editor.visible_rows.len());
         let mut wrap_updates = Vec::new();
         let mut y = px(0.);
-        for &row in &editor.visible_rows {
+        for (i, &row) in editor.visible_rows.iter().enumerate() {
+            y += editor.space_above(i, line_height);
             let scale = editor.row_scale(row);
             let lh = line_height * scale;
             let indent = editor.row_indent(row);
@@ -195,16 +213,22 @@ impl Element for EditorElement {
             let near = (y + lh * estimate as f32 >= paint_top - overscan
                 && y <= paint_bottom + overscan)
                 || row == cursor_row;
-            let (wrapped, display, visual_lines) = if near {
-                let (w, display) = editor.shape_row(row, &metrics, window);
-                let n = w.wrap_boundaries().len() + 1;
+            let (wrapped, display, visual_lines, decor, tags) = if near {
+                let shaped = editor.shape_row(row, &metrics, window);
+                let n = shaped.wrapped.wrap_boundaries().len() + 1;
                 if n != estimate || !editor.wrap_cache.contains_key(&key) {
                     wrap_updates.push((key, n));
                 }
-                (Some(w), display, n)
+                (
+                    Some(shaped.wrapped),
+                    shaped.display,
+                    n,
+                    shaped.decor,
+                    shaped.tags,
+                )
             } else {
                 let display = RowDisplay::plain(editor.doc.text(), editor.line_range(row));
-                (None, display, estimate)
+                (None, display, estimate, Vec::new(), Vec::new())
             };
             let extra = editor
                 .row_wrap_width(row, metrics.wrap_width)
@@ -228,6 +252,8 @@ impl Element for EditorElement {
                 line_height: lh,
                 wrapped,
                 visual_lines,
+                decor,
+                tags,
             });
             y += lh * visual_lines as f32 + extra;
         }
@@ -258,13 +284,18 @@ impl Element for EditorElement {
         let mut overlays = Vec::new();
         let mut glyphs = Vec::new();
         let mut icons = Vec::new();
+        let mut tag_hits = Vec::new();
         let text = editor.doc.text();
+        // Column positions of the last table row drawn, for the rule rows below it.
+        let mut table_columns: Vec<Pixels> = Vec::new();
 
-        for r in rows.iter().filter(|r| r.wrapped.is_some()) {
+        for (j, r) in rows.iter().enumerate() {
+            let Some(w) = r.wrapped.as_ref() else {
+                continue;
+            };
             if r.top + r.height() < paint_top || r.top > paint_bottom {
                 continue;
             }
-            let w = r.wrapped.as_ref().expect("filtered");
             let lh = r.line_height;
             let origin = point(text_left + r.indent, bounds.top() + r.top);
             let range = editor.line_range(r.row);
@@ -277,10 +308,140 @@ impl Element for EditorElement {
                 backgrounds.push(fill(
                     Bounds::from_corners(
                         point(origin.x - px(8.), origin.y),
-                        point(bounds.right(), origin.y + r.text_height()),
+                        point(text_right + px(8.), origin.y + r.text_height()),
                     ),
                     colors.subtle_secondary,
                 ));
+            }
+
+            // Tables not being edited: a grid in place of the `|` and `-+-` characters.
+            let kind = editor.row_kind(r.row);
+            if full && kind.is_table() && !editor.table_revealed(r.row) {
+                let (top, bottom) = (origin.y, origin.y + r.text_height());
+                if kind != crate::preview::RowKind::TableRule {
+                    table_columns = r
+                        .display
+                        .text
+                        .match_indices('|')
+                        .filter_map(|(i, _)| {
+                            let a = w.position_for_index(i, lh)?;
+                            let b = w.position_for_index(i + 1, lh)?;
+                            (a.y == b.y).then(|| origin.x + (a.x + b.x) / 2.)
+                        })
+                        .collect();
+                }
+                let joined = |k: Option<&crate::RowLayout>| {
+                    k.is_some_and(|k| {
+                        k.row.abs_diff(r.row) == 1 && editor.row_kind(k.row).is_table()
+                    })
+                };
+                if let (Some(&x0), Some(&x1)) = (table_columns.first(), table_columns.last()) {
+                    let rule = colors.stroke_control_strong;
+                    let hline = |y: Pixels| {
+                        fill(
+                            Bounds::from_corners(point(x0, y), point(x1 + px(1.), y + px(1.))),
+                            rule,
+                        )
+                    };
+                    if kind == (crate::preview::RowKind::Table { header: true }) {
+                        backgrounds.push(fill(
+                            Bounds::from_corners(point(x0, top), point(x1, bottom)),
+                            colors.subtle_secondary,
+                        ));
+                    }
+                    if kind == crate::preview::RowKind::TableRule {
+                        backgrounds.push(hline(((top + bottom) / 2.).floor()));
+                    }
+                    if !joined(j.checked_sub(1).and_then(|p| rows.get(p))) {
+                        backgrounds.push(hline(top));
+                    }
+                    if !joined(rows.get(j + 1)) {
+                        backgrounds.push(hline(bottom - px(1.)));
+                    }
+                    for &x in &table_columns {
+                        backgrounds.push(fill(
+                            Bounds::from_corners(point(x, top), point(x + px(1.), bottom)),
+                            rule,
+                        ));
+                    }
+                }
+            }
+
+            // Labels, checkboxes and icons drawn around the text.
+            let text_size = font_size * (lh / line_height);
+            for (range, style) in &r.decor {
+                let Some(p0) = w.position_for_index(range.start, lh) else {
+                    continue;
+                };
+                let x1 = w
+                    .position_for_index(range.end, lh)
+                    .filter(|p| p.y == p0.y)
+                    .map_or(line_width, |p| p.x);
+                let center_y = origin.y + p0.y + lh / 2.;
+                match style.decor {
+                    Some(Decor::Pill(color)) => {
+                        let h = (text_size * 1.3).min(lh);
+                        // Narrow, so neighbouring labels (TODO [#A]) keep a gap.
+                        let pad = text_size * 0.15;
+                        backgrounds.push(
+                            fill(
+                                Bounds::from_corners(
+                                    point(origin.x + p0.x - pad, center_y - h / 2.),
+                                    point(origin.x + x1 + pad, center_y + h / 2.),
+                                ),
+                                color,
+                            )
+                            .corner_radii(px(4.)),
+                        );
+                    }
+                    Some(Decor::Icon(icon)) => {
+                        let size = text_size * 0.95;
+                        let x = origin.x + p0.x + (x1 - p0.x - size) / 2.;
+                        icons.push((
+                            Bounds::new(point(x, center_y - size / 2.), gpui::size(size, size)),
+                            icon,
+                            style.color.unwrap_or(colors.text_secondary),
+                        ));
+                    }
+                    Some(Decor::Checkbox { checked, partial }) => {
+                        let size = (text_size * 0.9).round();
+                        let x = (origin.x + (p0.x + x1 - size) / 2.).round();
+                        let b = Bounds::new(
+                            point(x, (center_y - size / 2.).round()),
+                            gpui::size(size, size),
+                        );
+                        if checked || partial {
+                            backgrounds.push(fill(b, colors.accent).corner_radii(px(3.)));
+                            if checked {
+                                let inner = size * 0.75;
+                                icons.push((
+                                    Bounds::new(
+                                        b.origin + point((size - inner) / 2., (size - inner) / 2.),
+                                        gpui::size(inner, inner),
+                                    ),
+                                    Icon::Checkmark,
+                                    colors.text_on_accent,
+                                ));
+                            } else {
+                                overlays.push(fill(
+                                    Bounds::from_corners(
+                                        b.origin + point(size * 0.25, size * 0.5 - px(1.)),
+                                        b.origin + point(size * 0.75, size * 0.5 + px(1.)),
+                                    ),
+                                    colors.text_on_accent,
+                                ));
+                            }
+                        } else {
+                            backgrounds.push(
+                                fill(b, gpui::transparent_black())
+                                    .corner_radii(px(3.))
+                                    .border_widths(px(1.))
+                                    .border_color(colors.text_secondary),
+                            );
+                        }
+                    }
+                    None => {}
+                }
             }
             if full && editor.row_kind(r.row).left_bar() {
                 backgrounds.push(fill(
@@ -329,7 +490,8 @@ impl Element for EditorElement {
                 }
             }
 
-            // Fold arrows and the "…" after folded headings.
+            // Fold arrows and the "…" after folded headings; tags go after both.
+            let mut tail_x = px(0.);
             if full && let Some(_level) = editor.heading_level(r.row) {
                 let start = editor.line_starts[r.row];
                 if let Some(h) = editor
@@ -355,18 +517,54 @@ impl Element for EditorElement {
                         color,
                     ));
                     if folded {
-                        let end = w
-                            .position_for_index(r.display.text.len(), lh)
-                            .unwrap_or_default();
                         let shaped = shape_glyph(
                             window,
                             " …",
                             colors.text_tertiary,
                             font_size * (lh / line_height),
                         );
+                        let end = w
+                            .position_for_index(r.display.text.len(), lh)
+                            .unwrap_or_default();
+                        tail_x = tail_x.max(end.x + px(2.) + shaped.width);
                         glyphs.push((shaped, origin + point(end.x + px(2.), end.y), lh));
                     }
                 }
+            }
+
+            // A heading's tags, as small labels after its text.
+            if !r.tags.is_empty() {
+                let end = w
+                    .position_for_index(r.display.text.len(), lh)
+                    .unwrap_or_default();
+                let size = font_size * 0.8;
+                let h = size * 1.6;
+                let pad = size * 0.5;
+                let y = origin.y + end.y + (lh - h) / 2.;
+                let mut x = origin.x + tail_x.max(end.x) + px(10.);
+                let first = x;
+                for tag in &r.tags {
+                    let mut tag_run = run(colors.text_secondary);
+                    tag_run.len = tag.len();
+                    let shaped =
+                        window
+                            .text_system()
+                            .shape_line(tag.clone().into(), size, &[tag_run], None);
+                    let width = shaped.width + pad * 2.;
+                    backgrounds.push(
+                        fill(
+                            Bounds::new(point(x, y), gpui::size(width, h)),
+                            colors.neutral_bg,
+                        )
+                        .corner_radii(px(4.)),
+                    );
+                    glyphs.push((shaped, point(x + pad, y), h));
+                    x += width + px(4.);
+                }
+                tag_hits.push((
+                    Bounds::from_corners(point(first, y), point(x, y + h)),
+                    editor.line_starts[r.row],
+                ));
             }
         }
 
@@ -378,7 +576,7 @@ impl Element for EditorElement {
             .and_then(|d| d.target)
         {
             overlays.push(fill(
-                Bounds::from_corners(point(x, y - px(1.)), point(bounds.right(), y + px(1.))),
+                Bounds::from_corners(point(x, y - px(1.)), point(text_right, y + px(1.))),
                 colors.accent,
             ));
             overlays.push(fill(
@@ -470,6 +668,7 @@ impl Element for EditorElement {
             selections,
             glyphs,
             icons,
+            tag_hits,
             cursor: cursor_quad,
             wrap_updates,
         }
@@ -542,6 +741,7 @@ impl Element for EditorElement {
         let rows = std::mem::take(&mut prepaint.rows);
         let updates = std::mem::take(&mut prepaint.wrap_updates);
         let text_left = prepaint.text_left;
+        let tag_hits = std::mem::take(&mut prepaint.tag_hits);
         self.editor.update(cx, |editor, _| {
             if editor.wrap_cache.len() > 100_000 {
                 editor.wrap_cache.clear();
@@ -552,6 +752,7 @@ impl Element for EditorElement {
                 bounds,
                 text_left,
                 rows,
+                tag_hits,
             });
         });
     }
