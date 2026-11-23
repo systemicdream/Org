@@ -74,6 +74,10 @@ impl EntityInputHandler for OrgEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Vim Normal/Visual mode: keys are commands, never text.
+        if self.vim_blocks_text(cx) {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -107,6 +111,9 @@ impl EntityInputHandler for OrgEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.vim_blocks_text(cx) {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))

@@ -2,8 +2,12 @@
 
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    SharedString, Subscription, Window, div, prelude::*, px, rgb,
+    SharedString, Subscription, Window, div, prelude::*, px,
 };
+
+use aster_ui::components::{self, ButtonKind};
+use aster_ui::icons::Icon;
+use aster_ui::{ActiveTheme, ramp};
 
 use crate::{EditorEvent, OrgEditor};
 
@@ -97,36 +101,32 @@ impl FindBar {
 }
 
 fn button(
+    cx: &App,
     id: &'static str,
     label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .px_2()
-        .py_0p5()
-        .rounded_md()
-        .text_color(rgb(0x374151))
-        .hover(|s| s.bg(rgb(0xe5e7eb)).cursor_pointer())
-        .child(label.into())
-        .on_click(on_click)
+    components::button(id, label, ButtonKind::Subtle, cx).on_click(on_click)
 }
 
-fn input_box(editor: Entity<OrgEditor>) -> impl IntoElement {
-    div()
-        .w(px(260.))
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(0xd1d5db))
-        .bg(rgb(0xffffff))
-        .child(editor)
+fn icon_btn(
+    cx: &App,
+    id: &'static str,
+    glyph: Icon,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    components::icon_button(id, glyph, cx).on_click(on_click)
+}
+
+fn input_box(editor: Entity<OrgEditor>, window: &Window, cx: &App) -> impl IntoElement {
+    let focused = editor.focus_handle(cx).is_focused(window);
+    components::text_box(focused, cx).w(px(260.)).child(editor)
 }
 
 impl Render for FindBar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (active, total) = self.target.read(cx).search_status();
+        let colors = cx.theme().colors;
         let has_query = !self.query.read(cx).text().is_empty();
         let status = match (has_query, active) {
             (false, _) => String::new(),
@@ -140,17 +140,23 @@ impl Render for FindBar {
             .flex()
             .items_center()
             .gap_2()
-            .child(input_box(self.query.clone()))
-            .child(div().min_w(px(80.)).text_color(rgb(0x6b7280)).child(status))
-            .child(button("find-prev", "↑", {
+            .child(input_box(self.query.clone(), window, cx))
+            .child(
+                div()
+                    .min_w(px(80.))
+                    .text_color(colors.text_secondary)
+                    .child(status),
+            )
+            .child(icon_btn(cx, "find-prev", Icon::ArrowUp, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |b, cx| b.next(true, cx))
             }))
-            .child(button("find-next", "↓", {
+            .child(icon_btn(cx, "find-next", Icon::ArrowDown, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |b, cx| b.next(false, cx))
             }))
             .child(button(
+                cx,
                 "find-toggle-replace",
                 if self.show_replace {
                     "Hide replace"
@@ -168,7 +174,7 @@ impl Render for FindBar {
                 },
             ))
             .child(div().flex_1())
-            .child(button("find-close", "✕", {
+            .child(icon_btn(cx, "find-close", Icon::Dismiss, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |_, cx| cx.emit(FindBarEvent::Dismissed))
             }));
@@ -178,12 +184,12 @@ impl Render for FindBar {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(input_box(self.replacement.clone()))
-                .child(button("replace-one", "Replace", {
+                .child(input_box(self.replacement.clone(), window, cx))
+                .child(button(cx, "replace-one", "Replace", {
                     let this = this.clone();
                     move |_, _, cx| this.update(cx, |b, cx| b.replace_one(cx))
                 }))
-                .child(button("replace-all", "Replace all", {
+                .child(button(cx, "replace-all", "Replace all", {
                     let this = this.clone();
                     move |_, _, cx| this.update(cx, |b, cx| b.replace_all(cx))
                 }))
@@ -195,11 +201,11 @@ impl Render for FindBar {
             .gap_1()
             .px_4()
             .py_2()
-            .bg(rgb(0xf3f4f6))
+            .bg(colors.layer)
             .border_b_1()
-            .border_color(rgb(0xe5e7eb))
-            .text_size(px(14.))
-            .line_height(px(20.))
+            .border_color(colors.stroke_divider)
+            .text_size(ramp::BODY.size)
+            .line_height(ramp::BODY.line_height)
             .child(find_row)
             .children(replace_row)
     }

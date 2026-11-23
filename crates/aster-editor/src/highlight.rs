@@ -12,7 +12,8 @@ use crate::spans::SpanStyle;
 
 struct Assets {
     syntaxes: SyntaxSet,
-    theme: Theme,
+    light: Theme,
+    dark: Theme,
 }
 
 fn assets() -> &'static Assets {
@@ -21,9 +22,13 @@ fn assets() -> &'static Assets {
         let mut themes = ThemeSet::load_defaults();
         Assets {
             syntaxes: SyntaxSet::load_defaults_newlines(),
-            theme: themes
+            light: themes
                 .themes
                 .remove("InspiredGitHub")
+                .expect("bundled theme"),
+            dark: themes
+                .themes
+                .remove("base16-ocean.dark")
                 .expect("bundled theme"),
         }
     })
@@ -56,12 +61,12 @@ fn color(c: syntect::highlighting::Color) -> Hsla {
 }
 
 /// Highlight `code` (a block's content) as `lang`. Ranges are relative to `code`.
-pub fn highlight(lang: &str, code: &str) -> Vec<(Range<usize>, SpanStyle)> {
+pub fn highlight(lang: &str, code: &str, dark: bool) -> Vec<(Range<usize>, SpanStyle)> {
     let Some(syntax) = syntax_for(lang) else {
         return Vec::new();
     };
     let a = assets();
-    let mut h = HighlightLines::new(syntax, &a.theme);
+    let mut h = HighlightLines::new(syntax, if dark { &a.dark } else { &a.light });
     let mut out = Vec::new();
     let mut offset = 0;
     for line in code.split_inclusive('\n') {
@@ -96,15 +101,15 @@ mod tests {
 
     #[test]
     fn highlights_known_languages() {
-        let spans = highlight("rust", "fn main() {\n    let x = 1;\n}\n");
+        let spans = highlight("rust", "fn main() {\n    let x = 1;\n}\n", false);
         assert!(!spans.is_empty());
         let colors: std::collections::HashSet<_> = spans
             .iter()
             .map(|(_, s)| format!("{:?}", s.color))
             .collect();
         assert!(colors.len() > 1, "expected several colors");
-        assert!(!highlight("python", "def f():\n    return 1\n").is_empty());
-        assert!(!highlight("sh", "echo hi\n").is_empty());
-        assert!(highlight("not-a-language", "x").is_empty());
+        assert!(!highlight("python", "def f():\n    return 1\n", true).is_empty());
+        assert!(!highlight("sh", "echo hi\n", false).is_empty());
+        assert!(highlight("not-a-language", "x", false).is_empty());
     }
 }

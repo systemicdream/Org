@@ -4,7 +4,7 @@
 //! The index lives in memory and is rebuilt from the files (see ADR 0004); nothing is written
 //! into the user's notes folder.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -271,6 +271,8 @@ pub fn index_text(path: &Path, rel: String, text: String) -> FileEntry {
 pub struct Index {
     root: PathBuf,
     files: BTreeMap<PathBuf, FileEntry>,
+    /// Every folder under the root (not skipped), so empty folders show in the sidebar.
+    dirs: BTreeSet<PathBuf>,
 }
 
 impl Index {
@@ -279,9 +281,19 @@ impl Index {
         let mut index = Self {
             root: root.to_path_buf(),
             files: BTreeMap::new(),
+            dirs: BTreeSet::new(),
         };
-        let mut stack = vec![root.to_path_buf()];
+        index.scan_dir(root);
+        index
+    }
+
+    fn scan_dir(&mut self, start: &Path) {
+        let index = self;
+        let mut stack = vec![start.to_path_buf()];
         while let Some(dir) = stack.pop() {
+            if dir != index.root {
+                index.dirs.insert(dir.clone());
+            }
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
@@ -299,7 +311,49 @@ impl Index {
                 }
             }
         }
-        index
+    }
+
+    /// Bring everything at or under `path` up to date with the disk: for folders created,
+    /// renamed or deleted (file watchers report the folder, not each file in it). Returns
+    /// whether the index changed.
+    pub fn rescan_under(&mut self, path: &Path) -> bool {
+        if !path.starts_with(&self.root) || path == self.root {
+            return false;
+        }
+        let in_skipped = path
+            .strip_prefix(&self.root)
+            .map(|rel| {
+                rel.components()
+                    .any(|c| skip_dir(&c.as_os_str().to_string_lossy()))
+            })
+            .unwrap_or(true);
+        let files_before = self.files.len();
+        let dirs_before = self.dirs.clone();
+        let old: Vec<(PathBuf, String)> = self
+            .files
+            .range(path.to_path_buf()..)
+            .take_while(|(p, _)| p.starts_with(path))
+            .map(|(p, f)| (p.clone(), f.text.clone()))
+            .collect();
+        self.files.retain(|p, _| !p.starts_with(path));
+        self.dirs.retain(|d| !d.starts_with(path));
+        if !in_skipped {
+            if path.is_dir() {
+                self.scan_dir(path);
+            } else if is_org_file(path) {
+                self.update_file(path);
+            }
+        }
+        let same_files = self.files.len() == files_before
+            && old
+                .iter()
+                .all(|(p, text)| self.files.get(p).is_some_and(|f| &f.text == text));
+        !(same_files && self.dirs == dirs_before)
+    }
+
+    /// Folders under the root, relative with `/` separators.
+    pub fn dirs(&self) -> Vec<String> {
+        self.dirs.iter().map(|d| self.rel(d)).collect()
     }
 
     pub fn root(&self) -> &Path {
@@ -498,6 +552,30 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rescans_renamed_and_deleted_folders() {
+        let root = std::env::temp_dir().join(format!("aster-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/empty")).unwrap();
+        std::fs::write(root.join("a/x.org"), "* X\n").unwrap();
+        let root = std::fs::canonicalize(&root).unwrap();
+        let mut index = Index::scan(&root);
+        assert_eq!(index.dirs(), ["a", "a/empty"]);
+        assert_eq!(index.len(), 1);
+
+        std::fs::rename(root.join("a"), root.join("b")).unwrap();
+        assert!(index.rescan_under(&root.join("a")));
+        assert!(index.rescan_under(&root.join("b")));
+        assert_eq!(index.dirs(), ["b", "b/empty"]);
+        assert!(index.file(&root.join("b/x.org")).is_some());
+        assert!(!index.rescan_under(&root.join("b")), "nothing new");
+
+        std::fs::remove_dir_all(root.join("b")).unwrap();
+        assert!(index.rescan_under(&root.join("b")));
+        assert!(index.is_empty() && index.dirs().is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn conflict_names() {

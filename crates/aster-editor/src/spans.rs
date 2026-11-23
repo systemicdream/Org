@@ -3,9 +3,9 @@
 use std::ops::Range;
 
 use aster_org::HeadingInfo;
+use aster_ui::Colors;
 use gpui::{
     FontStyle, FontWeight, Hsla, SharedString, StrikethroughStyle, TextRun, UnderlineStyle, px,
-    rgb, rgba,
 };
 
 #[derive(Clone, Copy, Default)]
@@ -55,29 +55,33 @@ impl SpanStyle {
 
 pub type Spans = Vec<(Range<usize>, SpanStyle)>;
 
-fn color(hex: u32) -> Option<Hsla> {
-    Some(rgb(hex).into())
-}
-
-const HEADING_COLORS: [u32; 4] = [0x1d4ed8, 0x7c3aed, 0x0f766e, 0xb45309];
-
 /// Compute styled ranges for the whole document. Later spans override earlier ones.
-pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
+/// Colors follow docs/DESIGN.md §3 ("Org-specific colors").
+pub fn style_spans(headings: &[HeadingInfo], text: &str, colors: &Colors) -> Spans {
     let mut spans = Spans::new();
     for h in headings {
         let line_end = text[h.range.start..]
             .find(['\r', '\n'])
             .map_or(text.len(), |i| h.range.start + i);
         let line = &text[h.range.start..line_end];
+        // Headings are neutral; their size and weight carry the hierarchy. Done items fade.
         let heading = SpanStyle {
-            color: color(HEADING_COLORS[(h.level - 1) % HEADING_COLORS.len()]),
+            color: Some(if h.done {
+                colors.text_tertiary
+            } else {
+                colors.text_primary
+            }),
             bold: true,
             ..Default::default()
         };
         spans.push((h.range.start..line_end, heading));
 
         let muted = SpanStyle {
-            color: color(0x9ca3af),
+            color: Some(if h.level == 1 {
+                colors.accent
+            } else {
+                colors.text_tertiary
+            }),
             ..heading
         };
         spans.push((h.range.start..h.range.start + h.level, muted));
@@ -90,15 +94,15 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
         {
             // Pills hint that these are clickable.
             let (c, bg) = if h.done {
-                (0x16a34a, 0xdcfce7ff)
+                (colors.success, colors.success_bg)
             } else {
-                (0xdc2626, 0xfee2e2ff)
+                (colors.critical, colors.critical_bg)
             };
             spans.push((
                 keyword_start..keyword_start + todo.len(),
                 SpanStyle {
-                    color: color(c),
-                    background: Some(rgba(bg).into()),
+                    color: Some(c),
+                    background: Some(bg),
                     bold: true,
                     ..Default::default()
                 },
@@ -111,8 +115,8 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
             spans.push((
                 start..start + p.len() + 3,
                 SpanStyle {
-                    color: color(0xea580c),
-                    background: Some(rgba(0xffedd5ff).into()),
+                    color: Some(colors.caution),
+                    background: Some(colors.caution_bg),
                     bold: true,
                     ..Default::default()
                 },
@@ -127,8 +131,8 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str) -> Spans {
                 spans.push((
                     start..h.range.start + trimmed.len(),
                     SpanStyle {
-                        color: color(0x6b7280),
-                        background: Some(rgba(0xf3f4f6ff).into()),
+                        color: Some(colors.text_secondary),
+                        background: Some(colors.neutral_bg),
                         ..Default::default()
                     },
                 ));

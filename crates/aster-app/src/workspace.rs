@@ -11,27 +11,42 @@ use aster_index::{Index, fuzzy_score};
 use futures::StreamExt;
 use gpui::{
     Action, Context, Entity, Focusable, PathPromptOptions, PromptLevel, SharedString, Subscription,
-    Task, Window, div, prelude::*, px, rgb,
+    Task, Window, div, prelude::*, px,
 };
 
 use crate::agenda_view::{AgendaEvent, AgendaView, Mode as AgendaMode};
-use crate::capture::{CaptureDialog, CaptureEvent, Template};
+use crate::capture::{CaptureDialog, CaptureEvent, CaptureTime, capture_op};
+use crate::file_actions::TreeMenu;
+use crate::name_dialog::NameDialog;
 use crate::picker::{PickTarget, Picker, PickerEvent, PickerItem};
 use crate::session::Session;
+use crate::settings::{CaptureTemplate, Settings};
+use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::watch::{self, FolderWatcher};
 use crate::*;
 use aster_doc::ops::OpResult;
 use aster_doc::{Document, Selection, Transaction, dates, meta};
+use aster_ui::components::Tooltip;
+use aster_ui::icons::{Icon, icon};
+use aster_ui::{ActiveTheme, components, ramp};
 
 pub const SAMPLE: &str = include_str!("../assets/welcome.org");
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(1000);
 /// Collect file-change events for this long before acting on them.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// What fills the content area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Editor,
+    Agenda,
+    Settings,
+}
+
 pub struct Workspace {
     pub(crate) editor: Entity<OrgEditor>,
     pub(crate) path: Option<PathBuf>,
-    dirty: bool,
+    pub(crate) dirty: bool,
     find_bar: Option<Entity<FindBar>>,
     autosave: Option<Task<()>>,
     _editor_subscription: Subscription,
@@ -50,12 +65,19 @@ pub struct Workspace {
 
     // ---- views and dialogs ----
     agenda: Option<(Entity<AgendaView>, Subscription)>,
-    show_agenda: bool,
+    settings: Option<(Entity<SettingsView>, Subscription)>,
+    view: MainView,
     capture: Option<(Entity<CaptureDialog>, Subscription)>,
     /// The heading waiting for a refile target: (file, heading start).
     refile_source: Option<(PathBuf, usize)>,
     toast: Option<(SharedString, bool)>,
     toast_task: Option<Task<()>>,
+    pub(crate) tree_menu: Option<TreeMenu>,
+    pub(crate) name_dialog: Option<(Entity<NameDialog>, Subscription)>,
+    /// The welcome sample is showing (unsaved, not a file).
+    sample: bool,
+    /// Focus for the window itself, so shortcuts work when no note is open.
+    focus_handle: gpui::FocusHandle,
 }
 
 impl Workspace {
@@ -84,13 +106,33 @@ impl Workspace {
             sidebar_open: true,
             _watcher: None,
             agenda: None,
-            show_agenda: false,
+            settings: None,
+            view: MainView::Editor,
             capture: None,
             refile_source: None,
             toast: None,
             toast_task: None,
+            tree_menu: None,
+            name_dialog: None,
+            sample: false,
+            focus_handle: cx.focus_handle(),
         };
         window.set_window_title(&ws.title());
+        // Follow the system's light/dark setting.
+        cx.observe_window_appearance(window, |_, window, cx| {
+            let changed = aster_ui::set_appearance(window.appearance(), cx);
+            if aster_ui::refresh_accent(cx) | changed {
+                window.refresh();
+            }
+        })
+        .detach();
+        // Pick up a changed system accent color when the window comes back into focus.
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() && aster_ui::refresh_accent(cx) {
+                window.refresh();
+            }
+        })
+        .detach();
         ws.sync_base_dir(cx);
         if let Some(root) = root {
             ws.set_root(root, window, cx);
@@ -107,7 +149,7 @@ impl Workspace {
     }
 
     /// Tell the editor which folder relative links and images resolve against.
-    fn sync_base_dir(&self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_base_dir(&self, cx: &mut Context<Self>) {
         let dir = self
             .path
             .as_deref()
@@ -134,27 +176,84 @@ impl Workspace {
         (editor, sub)
     }
 
-    fn title(&self) -> String {
-        let name = self
-            .path
-            .as_deref()
-            .and_then(Path::file_name)
-            .map_or("Welcome (unsaved sample)".into(), |n| {
-                n.to_string_lossy().into_owned()
-            });
+    pub(crate) fn title(&self) -> String {
+        let name = match (&self.path, self.sample) {
+            (Some(p), _) => p.file_name().map(|n| n.to_string_lossy().into_owned()),
+            (None, true) => Some("Welcome (sample)".into()),
+            (None, false) => None,
+        };
         let folder = self
             .root
             .as_deref()
             .and_then(Path::file_name)
-            .map(|n| format!(" — {}", n.to_string_lossy()))
-            .unwrap_or_default();
+            .map(|n| n.to_string_lossy().into_owned());
+        let parts: Vec<String> = name.into_iter().chain(folder).collect();
+        if parts.is_empty() {
+            return "Aster".into();
+        }
         format!(
-            "{}{name}{folder} — Aster",
-            if self.dirty { "● " } else { "" }
+            "{}{} — Aster",
+            if self.dirty { "● " } else { "" },
+            parts.join(" — ")
         )
     }
 
-    fn save_session(&self) {
+    /// Drop a pending autosave (the edits stay in the editor, marked unsaved).
+    pub(crate) fn cancel_autosave(&mut self) {
+        self.autosave = None;
+    }
+
+    /// Whether a document is open in the editor (a file, or the sample).
+    pub(crate) fn has_document(&self) -> bool {
+        self.path.is_some() || self.sample
+    }
+
+    /// Put focus back on whatever fills the content area.
+    pub(crate) fn focus_main(&self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.view, &self.agenda, &self.settings) {
+            (MainView::Agenda, Some((v, _)), _) => window.focus(&v.focus_handle(cx)),
+            (MainView::Settings, _, Some((v, _))) => window.focus(&v.focus_handle(cx)),
+            _ if self.has_document() => window.focus(&self.editor.focus_handle(cx)),
+            _ => window.focus(&self.focus_handle),
+        }
+    }
+
+    /// Close the open file (e.g. it was deleted) and show the folder's empty state.
+    pub(crate) fn close_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.autosave = None;
+        self.dirty = false;
+        self.close_find_bar(window, cx);
+        let (editor, sub) = Self::make_editor(String::new(), window, cx);
+        self.editor = editor;
+        self._editor_subscription = sub;
+        self.path = None;
+        self.sample = false;
+        self.sync_base_dir(cx);
+        window.set_window_title(&self.title());
+        self.save_session();
+        self.focus_main(window, cx);
+        cx.notify();
+    }
+
+    /// Show the welcome sample (unsaved) in the editor.
+    pub(crate) fn show_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dirty {
+            self.save_now(window, cx);
+        }
+        let (editor, sub) = Self::make_editor(SAMPLE.to_string(), window, cx);
+        self.editor = editor;
+        self._editor_subscription = sub;
+        self.path = None;
+        self.sample = true;
+        self.dirty = false;
+        self.view = MainView::Editor;
+        self.sync_base_dir(cx);
+        window.set_window_title(&self.title());
+        window.focus(&self.editor.focus_handle(cx));
+        cx.notify();
+    }
+
+    pub(crate) fn save_session(&self) {
         Session {
             root: self.root.clone(),
             file: self.path.clone(),
@@ -231,6 +330,14 @@ impl Workspace {
 
     // ---- agenda ---------------------------------------------------------------------------
 
+    /// The agenda mode on screen, if the agenda is showing.
+    pub(crate) fn current_view(&self, cx: &gpui::App) -> Option<AgendaMode> {
+        self.agenda
+            .as_ref()
+            .filter(|_| self.view == MainView::Agenda)
+            .map(|(v, _)| v.read(cx).mode)
+    }
+
     pub(crate) fn show_agenda_mode(
         &mut self,
         mode: AgendaMode,
@@ -251,28 +358,33 @@ impl Workspace {
                         match event {
                             AgendaEvent::Open(path, offset) => {
                                 let (path, offset) = (path.clone(), *offset);
-                                this.hide_agenda(window, cx);
+                                this.show_editor(window, cx);
                                 this.open_at(path, offset..offset, window, cx);
                             }
                             AgendaEvent::ToggleDone(path, offset) => {
                                 let (path, offset) = (path.clone(), *offset);
                                 this.toggle_done_at(&path, offset, cx);
                             }
-                            AgendaEvent::Close => this.hide_agenda(window, cx),
+                            AgendaEvent::Close => this.show_editor(window, cx),
                         }
                     });
                 self.agenda = Some((view.clone(), sub));
                 view
             }
         };
-        self.show_agenda = true;
+        self.view = MainView::Agenda;
         view.update(cx, |v, cx| v.set_mode(mode, window, cx));
         cx.notify();
     }
 
-    fn hide_agenda(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_agenda = false;
-        window.focus(&self.editor.focus_handle(cx));
+    /// Whether the open file's editor is on screen (not the agenda or settings).
+    pub(crate) fn editor_visible(&self) -> bool {
+        self.view == MainView::Editor
+    }
+
+    fn show_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.view = MainView::Editor;
+        self.focus_main(window, cx);
         cx.notify();
     }
 
@@ -282,11 +394,43 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.show_agenda {
-            self.hide_agenda(window, cx);
+        if self.view == MainView::Agenda {
+            self.show_editor(window, cx);
         } else {
             self.show_agenda_mode(AgendaMode::Day, window, cx);
         }
+    }
+
+    pub(crate) fn show_settings(
+        &mut self,
+        _: &ShowSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.view == MainView::Settings {
+            self.show_editor(window, cx);
+            return;
+        }
+        let view = match &self.settings {
+            Some((view, _)) => view.clone(),
+            None => {
+                let view = cx.new(|cx| SettingsView::new(window, cx));
+                let sub = cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, event: &SettingsEvent, window, cx| match event {
+                        SettingsEvent::Close => this.show_editor(window, cx),
+                        SettingsEvent::Error(msg) => this.toast(msg.clone(), true, cx),
+                    },
+                );
+                self.settings = Some((view.clone(), sub));
+                view
+            }
+        };
+        self.close_find_bar(window, cx);
+        self.view = MainView::Settings;
+        window.focus(&view.focus_handle(cx));
+        cx.notify();
     }
 
     pub(crate) fn show_todo_list(
@@ -350,14 +494,14 @@ impl Workspace {
             window,
             |this, _, event: &CaptureEvent, window, cx| match event {
                 CaptureEvent::Capture(template, text) => {
-                    let (template, text) = (*template, text.clone());
+                    let (template, text) = (template.clone(), text.clone());
                     this.capture = None;
-                    window.focus(&this.editor.focus_handle(cx));
+                    this.focus_main(window, cx);
                     this.save_capture(template, &text, cx);
                 }
                 CaptureEvent::Dismissed => {
                     this.capture = None;
-                    window.focus(&this.editor.focus_handle(cx));
+                    this.focus_main(window, cx);
                     cx.notify();
                 }
             },
@@ -366,54 +510,29 @@ impl Workspace {
         cx.notify();
     }
 
-    fn save_capture(&mut self, template: Template, text: &str, cx: &mut Context<Self>) {
+    fn save_capture(&mut self, template: CaptureTemplate, text: &str, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let stamp = dates::inactive_now();
-        let (file, result) = match template {
-            Template::Task | Template::Note => {
-                let path = root.join("inbox.org");
-                let keyword = if template == Template::Task {
-                    "TODO "
-                } else {
-                    ""
-                };
-                let chunk = format!("* {keyword}{text}\n{stamp}\n");
-                let r = self.edit_file(&path, |doc| meta::insert_subtree(doc, None, &chunk), cx);
-                ("inbox.org", r)
-            }
-            Template::Journal => {
-                let path = root.join("journal.org");
-                let today = dates::today();
-                let day_title = dates::format_date(today);
-                let time = chrono::Local::now().format("%H:%M").to_string();
-                let r = self.edit_file(
-                    &path,
-                    |doc| {
-                        let day = doc
-                            .headings()
-                            .iter()
-                            .find(|h| h.level == 1 && h.title == day_title)
-                            .map(|h| h.range.start);
-                        match day {
-                            Some(d) => {
-                                meta::insert_subtree(doc, Some(d), &format!("** {time} {text}\n"))
-                            }
-                            None => meta::insert_subtree(
-                                doc,
-                                None,
-                                &format!("* {day_title}\n** {time} {text}\n"),
-                            ),
-                        }
-                    },
-                    cx,
-                );
-                ("journal.org", r)
-            }
+        let Some(rel) = template.target() else {
+            self.toast(
+                format!(
+                    "The “{}” template has no usable file. Fix it in Settings.",
+                    template.name
+                ),
+                true,
+                cx,
+            );
+            return;
         };
+        let at = CaptureTime::now();
+        let result = self.edit_file(
+            &root.join(&rel),
+            |doc| capture_op(doc, &template, text, &at),
+            cx,
+        );
         match result {
-            Ok(_) => self.toast(format!("Captured to {file}"), false, cx),
+            Ok(_) => self.toast(format!("Captured to {}", rel.display()), false, cx),
             Err(err) => self.toast(format!("Capture failed: {err:#}"), true, cx),
         }
     }
@@ -455,6 +574,7 @@ impl Workspace {
                         PickerItem {
                             label: format!("{} (top level)", f.display_name()).into(),
                             detail: Some(f.rel.clone().into()),
+                            icon: Some(Icon::Document),
                             ..Default::default()
                         },
                         PickTarget::Refile(f.path.clone(), None),
@@ -483,6 +603,7 @@ impl Workspace {
                         PickerItem {
                             label: outline.into(),
                             detail: Some(f.rel.clone().into()),
+                            icon: Some(Icon::ArrowMove),
                             ..Default::default()
                         },
                         PickTarget::Refile(f.path.clone(), Some(hd.offset)),
@@ -636,7 +757,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -686,6 +807,7 @@ impl Workspace {
             if let Ok(Ok(Some(path))) = rx.await {
                 this.update_in(cx, |ws, window, cx| {
                     ws.path = Some(path);
+                    ws.sample = false;
                     ws.sync_base_dir(cx);
                     ws.save_now(window, cx);
                     ws.save_session();
@@ -754,7 +876,7 @@ impl Workspace {
         // One spelling per file (`a/../b.org` → `b.org`), so it matches the index and tree.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
         if self.path.as_ref() == Some(&path) {
-            self.show_agenda = false;
+            self.view = MainView::Editor;
             window.focus(&self.editor.focus_handle(cx));
             cx.notify();
             return;
@@ -779,11 +901,12 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = Some(path.clone());
+        self.sample = false;
         self.sync_base_dir(cx);
         self.sync_known_tags(cx);
         self.dirty = false;
         self.reveal_in_tree(&path);
-        self.show_agenda = false;
+        self.view = MainView::Editor;
         window.set_window_title(&self.title());
         window.focus(&self.editor.focus_handle(cx));
         self.save_session();
@@ -804,7 +927,7 @@ impl Workspace {
     }
 
     /// Expand the folders containing `path` in the file tree.
-    fn reveal_in_tree(&mut self, path: &Path) {
+    pub(crate) fn reveal_in_tree(&mut self, path: &Path) {
         let Some(root) = &self.root else { return };
         let Ok(rel) = path.strip_prefix(root) else {
             return;
@@ -946,7 +1069,7 @@ impl Workspace {
                 while let Ok(p) = changes.try_recv() {
                     batch.push(p);
                 }
-                let paths = watch::org_paths(batch);
+                let paths = watch::relevant_paths(batch);
                 if paths.is_empty() {
                     continue;
                 }
@@ -971,8 +1094,13 @@ impl Workspace {
         self.index.update(cx, |index, cx| {
             let mut changed = false;
             for p in &paths {
-                if index.covers(p) {
-                    changed |= index.update_file(p);
+                if aster_index::is_org_file(p) {
+                    if index.covers(p) {
+                        changed |= index.update_file(p);
+                    }
+                } else {
+                    // A folder was created, renamed or deleted.
+                    changed |= index.rescan_under(p);
                 }
             }
             if changed {
@@ -1073,7 +1201,7 @@ impl Workspace {
     fn close_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refile_source = None;
         if self.picker.take().is_some() {
-            window.focus(&self.editor.focus_handle(cx));
+            self.focus_main(window, cx);
             cx.notify();
         }
     }
@@ -1083,7 +1211,7 @@ impl Workspace {
             PickTarget::Command(i) => {
                 if let Some((_, action)) = self.commands.get(i) {
                     let action = action.boxed_clone();
-                    window.focus(&self.editor.focus_handle(cx));
+                    self.focus_main(window, cx);
                     window.dispatch_action(action, cx);
                 }
             }
@@ -1102,6 +1230,7 @@ impl Workspace {
             ("Agenda", Box::new(ShowAgenda)),
             ("To-do list", Box::new(ShowTodoList)),
             ("Capture…", Box::new(Capture)),
+            ("Settings…", Box::new(ShowSettings)),
             ("Toggle sidebar", Box::new(ToggleSidebar)),
             ("Save", Box::new(Save)),
             ("Save as…", Box::new(SaveAs)),
@@ -1128,8 +1257,17 @@ impl Workspace {
             .commands
             .iter()
             .map(|(name, action)| {
+                // As the editor would resolve it; if it isn't on screen (agenda showing), look
+                // in its key context, then globally.
                 let hint = window
                     .highest_precedence_binding_for_action_in(action.as_ref(), &target)
+                    .or_else(|| {
+                        window.highest_precedence_binding_for_action_in_context(
+                            action.as_ref(),
+                            gpui::KeyContext::parse("OrgEditor").unwrap_or_default(),
+                        )
+                    })
+                    .or_else(|| window.highest_precedence_binding_for_action(action.as_ref()))
                     .map(|b| format_keystrokes(&b).into());
                 (*name, hint)
             })
@@ -1182,6 +1320,11 @@ impl Workspace {
                             label: f.display_name().into(),
                             detail: Some(f.rel.clone().into()),
                             hint: f.conflict.then(|| "sync conflict".into()),
+                            icon: Some(if f.conflict {
+                                Icon::Warning
+                            } else {
+                                Icon::Document
+                            }),
                             ..Default::default()
                         },
                         PickTarget::File(f.path.clone()),
@@ -1225,6 +1368,7 @@ impl Workspace {
                             highlight: Some(hit.snippet_match.clone()),
                             detail: Some(format!("{}:{}", hit.rel, hit.line).into()),
                             hint: None,
+                            icon: Some(Icon::Document),
                         },
                         PickTarget::Location(hit.path.clone(), hit.offset..hit.offset + len),
                     )
@@ -1255,6 +1399,7 @@ impl Workspace {
                         PickerItem {
                             label: label.into(),
                             detail: Some(f.rel.clone().into()),
+                            icon: Some(Icon::Tag),
                             ..Default::default()
                         },
                         PickTarget::Location(f.path.clone(), h.offset..h.offset),
@@ -1339,7 +1484,7 @@ pub fn read_org(path: &Path) -> anyhow::Result<String> {
 }
 
 /// Write via a temp file + rename so sync tools never observe a half-written file.
-fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(
         ".{}.aster-tmp",
@@ -1350,20 +1495,128 @@ fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Height of the custom title area on macOS (the traffic lights sit in it).
+const TITLE_BAR_HEIGHT: f32 = 38.;
+
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = cx.theme().colors;
         let sidebar = if self.sidebar_open && self.root.is_some() {
             Some(self.render_sidebar(cx).into_any_element())
         } else {
             None
         };
+        let has_sidebar = sidebar.is_some();
+        // The command bar (docs/DESIGN.md §11). On macOS it's the transparent title bar (traffic
+        // lights on the left, drag to move); elsewhere it sits under the native title bar and
+        // gives access to commands that live in the menu bar on macOS.
+        let mac = cfg!(target_os = "macos");
+        let bar_button = |id: &'static str,
+                          glyph: Icon,
+                          tip: &'static str,
+                          action: fn() -> Box<dyn Action>,
+                          cx: &mut Context<Self>| {
+            components::icon_button(id, glyph, cx)
+                .tooltip(move |window, cx| Tooltip::text(tip, window, cx))
+                .on_click(cx.listener(move |_, _, window, cx| {
+                    window.dispatch_action(action(), cx);
+                }))
+        };
+        let title_bar = div()
+            .id("title-bar")
+            .h(px(TITLE_BAR_HEIGHT))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .when(mac, |d| d.pl(px(78.)))
+            .child(bar_button(
+                "bar-sidebar",
+                Icon::PanelLeft,
+                "Toggle sidebar",
+                || Box::new(ToggleSidebar),
+                cx,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(ramp::BODY.size)
+                    .text_color(colors.text_secondary)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(window.window_title())
+                    .when(mac, |d| {
+                        d.on_mouse_down(gpui::MouseButton::Left, |e, window, _| {
+                            if e.click_count == 2 {
+                                window.zoom_window();
+                            } else {
+                                window.start_window_move();
+                            }
+                        })
+                    }),
+            )
+            .child(bar_button(
+                "bar-search",
+                Icon::Search,
+                "Search all files",
+                || Box::new(SearchAll),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-capture",
+                Icon::NoteAdd,
+                "Capture",
+                || Box::new(Capture),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-agenda",
+                Icon::Agenda,
+                "Agenda",
+                || Box::new(ShowAgenda),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-settings",
+                Icon::Settings,
+                "Settings",
+                || Box::new(ShowSettings),
+                cx,
+            ))
+            .child(bar_button(
+                "bar-commands",
+                Icon::More,
+                "All commands",
+                || Box::new(ShowCommandPalette),
+                cx,
+            ));
+        let main = match (self.view, &self.agenda, &self.settings) {
+            (MainView::Agenda, Some((agenda, _)), _) => agenda.clone().into_any_element(),
+            (MainView::Settings, _, Some((settings, _))) => settings.clone().into_any_element(),
+            _ if self.has_document() => self.editor.clone().into_any_element(),
+            _ if self.root.is_some() => self.render_empty_state(cx),
+            _ => self.render_first_run(cx),
+        };
+        let vim_mode = (self.view == MainView::Editor && self.has_document())
+            .then(|| self.editor.read(cx).vim_mode(cx))
+            .flatten();
+        let text_size = cx.global::<Settings>().font_size;
+        let line_height = cx.global::<Settings>().line_height();
+
         div()
             .size_full()
             .flex()
-            .bg(rgb(0xffffff))
-            .text_color(rgb(0x1f2937))
-            .text_size(px(16.))
-            .line_height(px(26.))
+            .flex_col()
+            .track_focus(&self.focus_handle)
+            .bg(colors.base)
+            .text_color(colors.text_primary)
+            .text_size(px(text_size))
+            .line_height(px(line_height))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::open))
@@ -1380,23 +1633,62 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_agenda))
             .on_action(cx.listener(Self::show_todo_list))
             .on_action(cx.listener(Self::capture))
+            .on_action(cx.listener(Self::show_settings))
             .on_action(cx.listener(Self::refile))
             .on_action(cx.listener(Self::archive))
-            .children(sidebar)
+            .child(title_bar)
             .child(
                 div()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .min_h_0()
                     .flex()
-                    .flex_col()
-                    .children(self.find_bar.clone().filter(|_| !self.show_agenda))
-                    .child(div().flex_1().min_h_0().map(|d| {
-                        match self.agenda.as_ref().filter(|_| self.show_agenda) {
-                            Some((agenda, _)) => d.child(agenda.clone()),
-                            None => d.child(self.editor.clone()),
-                        }
-                    })),
+                    .children(sidebar)
+                    // The content layer: a card inset into the base, rounded where it meets
+                    // the sidebar and title area.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .relative()
+                            .overflow_hidden()
+                            .bg(colors.layer)
+                            .border_t_1()
+                            .border_color(colors.stroke_surface)
+                            .when(has_sidebar, |d| {
+                                d.border_l_1().rounded_tl(aster_ui::RADIUS_OVERLAY)
+                            })
+                            .children(
+                                self.find_bar
+                                    .clone()
+                                    .filter(|_| self.view == MainView::Editor),
+                            )
+                            .child(div().flex_1().min_h_0().child(main))
+                            .children(vim_mode.map(|mode| {
+                                // Vim's mode, as a status pill in the corner.
+                                div().absolute().bottom(px(12.)).right(px(16.)).child(
+                                    components::pill(
+                                        if mode == aster_editor::vim::VimMode::Normal {
+                                            colors.text_secondary
+                                        } else {
+                                            colors.text_on_accent
+                                        },
+                                        if mode == aster_editor::vim::VimMode::Normal {
+                                            colors.subtle_secondary
+                                        } else {
+                                            colors.accent
+                                        },
+                                    )
+                                    .px_2()
+                                    .text_size(ramp::CAPTION.size)
+                                    .line_height(ramp::CAPTION.line_height)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(mode.label()),
+                                )
+                            })),
+                    ),
             )
             .children(self.capture.as_ref().map(|(c, _)| {
                 gpui::deferred(
@@ -1411,26 +1703,50 @@ impl Render for Workspace {
                 )
                 .with_priority(2)
             }))
-            .children(self.toast.clone().map(|(msg, error)| {
+            .children(self.name_dialog.as_ref().map(|(d, _)| {
                 gpui::deferred(
                     div()
                         .absolute()
-                        .bottom(px(16.))
-                        .right(px(16.))
-                        .max_w(px(420.))
-                        .px_3()
-                        .py_2()
-                        .rounded_lg()
-                        .shadow_lg()
-                        .text_size(px(13.))
-                        .line_height(px(20.))
-                        .bg(if error { rgb(0xfef2f2) } else { rgb(0x111827) })
-                        .text_color(if error { rgb(0x991b1b) } else { rgb(0xf9fafb) })
-                        .border_1()
-                        .border_color(if error { rgb(0xfecaca) } else { rgb(0x111827) })
-                        .child(msg),
+                        .top(px(120.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(d.clone()),
                 )
-                .with_priority(3)
+                .with_priority(2)
+            }))
+            .children(self.render_tree_menu(cx))
+            .children(self.toast.clone().map(|(msg, error)| {
+                // InfoBar-style toast (docs/DESIGN.md §7).
+                let theme = cx.theme();
+                let surface = div()
+                    .absolute()
+                    .bottom(px(16.))
+                    .right(px(16.))
+                    .max_w(px(420.))
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .gap_2()
+                    .rounded(aster_ui::RADIUS_OVERLAY)
+                    .shadow(theme.shadow(aster_ui::Elevation::Tooltip))
+                    .border_1()
+                    .border_color(colors.stroke_surface)
+                    .text_size(ramp::BODY.size)
+                    .line_height(ramp::BODY.line_height);
+                let surface = if error {
+                    surface
+                        .bg(colors.critical_bg)
+                        .child(icon(Icon::ErrorCircle, px(16.), colors.critical).mt(px(2.)))
+                        .child(div().text_color(colors.text_primary).child(msg))
+                } else {
+                    surface
+                        .bg(colors.flyout)
+                        .child(icon(Icon::CheckmarkCircle, px(16.), colors.success).mt(px(2.)))
+                        .child(div().text_color(colors.text_primary).child(msg))
+                };
+                gpui::deferred(surface).with_priority(3)
             }))
             .children(self.picker.as_ref().map(|(p, _)| {
                 gpui::deferred(

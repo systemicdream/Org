@@ -12,3 +12,4 @@ gpui.workspace = true
 unicode-segmentation.workspace = true
 syntect.workspace = true
 chrono.workspace = true
+aster-ui.workspace = true

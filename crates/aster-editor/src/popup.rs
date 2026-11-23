@@ -8,10 +8,12 @@ use aster_doc::{EditOrigin, Selection, Transaction, dates, ops};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
     AnyElement, Context, Entity, Focusable, MouseButton, Pixels, Point, SharedString, Subscription,
-    Window, anchored, deferred, div, prelude::*, px, rgb,
+    Window, anchored, deferred, div, prelude::*, px,
 };
 
 use crate::{EditorEvent, OrgEditor};
+use aster_ui::ActiveTheme;
+use aster_ui::icons::{Icon, icon};
 
 /// What a date picker changes.
 #[derive(Clone, Debug)]
@@ -54,6 +56,7 @@ pub(crate) struct MenuItem {
     label: SharedString,
     hint: Option<SharedString>,
     checked: bool,
+    icon: Option<Icon>,
     command: Command,
 }
 
@@ -63,8 +66,14 @@ impl MenuItem {
             label: label.into(),
             hint: None,
             checked: false,
+            icon: None,
             command,
         }
+    }
+
+    fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     fn hint(mut self, hint: impl Into<SharedString>) -> Self {
@@ -152,6 +161,24 @@ const SLASH_ITEMS: &[(SlashKind, &str, &str)] = &[
     (SlashKind::Schedule, "Schedule…", "scheduled date when"),
     (SlashKind::Deadline, "Deadline…", "due date"),
 ];
+
+fn slash_icon(kind: SlashKind) -> Icon {
+    match kind {
+        SlashKind::Heading => Icon::Heading1,
+        SlashKind::Subheading => Icon::Heading2,
+        SlashKind::Todo | SlashKind::Checklist => Icon::Checkbox,
+        SlashKind::Bullets => Icon::BulletList,
+        SlashKind::Numbered => Icon::NumberList,
+        SlashKind::Table => Icon::Table,
+        SlashKind::Code => Icon::Code,
+        SlashKind::Quote => Icon::Quote,
+        SlashKind::Date => Icon::CalendarToday,
+        SlashKind::Link => Icon::Link,
+        SlashKind::Divider => Icon::Divider,
+        SlashKind::Schedule => Icon::Schedule,
+        SlashKind::Deadline => Icon::Deadline,
+    }
+}
 
 fn slash_matches(query: &str) -> Vec<(SlashKind, &'static str)> {
     let q = query.to_lowercase();
@@ -274,7 +301,10 @@ impl OrgEditor {
             .unwrap_or_default();
         let mut items: Vec<MenuItem> = tags
             .iter()
-            .map(|t| MenuItem::new(format!("Remove :{t}:"), Command::RemoveTag(h, t.clone())))
+            .map(|t| {
+                MenuItem::new(format!("Remove :{t}:"), Command::RemoveTag(h, t.clone()))
+                    .icon(Icon::Dismiss)
+            })
             .collect();
         // Suggest tags used elsewhere in the notes folder.
         items.extend(
@@ -286,7 +316,7 @@ impl OrgEditor {
                     MenuItem::new(format!("Add :{t}:"), Command::AddExistingTag(h, t.clone()))
                 }),
         );
-        items.push(MenuItem::new("New tag…", Command::AddTag(h)));
+        items.push(MenuItem::new("New tag…", Command::AddTag(h)).icon(Icon::Add));
         self.open_menu(anchor, Some("Tags"), items, cx);
     }
 
@@ -308,31 +338,43 @@ impl OrgEditor {
             "Alt+"
         };
         let items = vec![
-            MenuItem::new("Set state…", Command::TodoMenu(h)).hint(key(&format!("{mod_key}↵"))),
-            MenuItem::new("Set priority…", Command::PriorityMenu(h)),
-            MenuItem::new("Tags…", Command::TagsMenu(h)),
+            MenuItem::new("Set state…", Command::TodoMenu(h))
+                .icon(Icon::Checkbox)
+                .hint(key(&format!("{mod_key}↵"))),
+            MenuItem::new("Set priority…", Command::PriorityMenu(h)).icon(Icon::Flag),
+            MenuItem::new("Tags…", Command::TagsMenu(h)).icon(Icon::Tag),
             MenuItem::new(
                 "Schedule…",
                 Command::PickDate(DateTarget::Planning(h, Planning::Scheduled)),
-            ),
+            )
+            .icon(Icon::Schedule),
             MenuItem::new(
                 "Set deadline…",
                 Command::PickDate(DateTarget::Planning(h, Planning::Deadline)),
-            ),
+            )
+            .icon(Icon::Deadline),
             MenuItem::new(
                 "New heading below",
                 Command::Heading(h, HeadingOp::NewBelow),
             )
+            .icon(Icon::Add)
             .hint(key(&format!("{alt}↵"))),
             MenuItem::new("Move up", Command::Heading(h, HeadingOp::MoveUp))
+                .icon(Icon::ArrowUp)
                 .hint(key(&format!("{alt}↑"))),
             MenuItem::new("Move down", Command::Heading(h, HeadingOp::MoveDown))
+                .icon(Icon::ArrowDown)
                 .hint(key(&format!("{alt}↓"))),
-            MenuItem::new("Indent", Command::Heading(h, HeadingOp::Indent)).hint("Tab"),
-            MenuItem::new("Outdent", Command::Heading(h, HeadingOp::Outdent)).hint("⇧Tab"),
-            MenuItem::new("Fold / unfold", Command::Heading(h, HeadingOp::ToggleFold)),
-            MenuItem::new("Refile…", Command::Heading(h, HeadingOp::Refile)),
-            MenuItem::new("Archive", Command::Heading(h, HeadingOp::Archive)),
+            MenuItem::new("Indent", Command::Heading(h, HeadingOp::Indent))
+                .icon(Icon::ChevronRight)
+                .hint("Tab"),
+            MenuItem::new("Outdent", Command::Heading(h, HeadingOp::Outdent))
+                .icon(Icon::ChevronLeft)
+                .hint("⇧Tab"),
+            MenuItem::new("Fold / unfold", Command::Heading(h, HeadingOp::ToggleFold))
+                .icon(Icon::ChevronDown),
+            MenuItem::new("Refile…", Command::Heading(h, HeadingOp::Refile)).icon(Icon::ArrowMove),
+            MenuItem::new("Archive", Command::Heading(h, HeadingOp::Archive)).icon(Icon::Archive),
         ];
         self.open_menu(anchor, None, items, cx);
     }
@@ -773,18 +815,10 @@ impl OrgEditor {
             } => (*anchor, self.render_date(*month, *selected, *clearable, cx)),
             Popup::TagInput { anchor, input, .. } => (
                 *anchor,
-                panel()
+                panel(cx)
                     .p_2()
                     .w(px(220.))
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(0xd1d5db))
-                            .child(input.clone()),
-                    )
+                    .child(aster_ui::components::text_box(true, cx).child(input.clone()))
                     .into_any_element(),
             ),
             Popup::Slash { start, selected } => {
@@ -793,8 +827,9 @@ impl OrgEditor {
                 let query = self.slash_query(start)?.to_string();
                 let items: Vec<MenuItem> = slash_matches(&query)
                     .into_iter()
-                    .map(|(_, name)| {
+                    .map(|(kind, name)| {
                         MenuItem::new(name, Command::Heading(0, HeadingOp::ToggleFold))
+                            .icon(slash_icon(kind))
                     })
                     .collect();
                 let anchor = self.anchor_below(start..start);
@@ -821,7 +856,7 @@ impl OrgEditor {
         selected: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        panel()
+        panel(cx)
             .min_w(px(200.))
             .children(title.map(|t| {
                 div()
@@ -829,12 +864,21 @@ impl OrgEditor {
                     .pt_1()
                     .pb_0p5()
                     .text_size(px(12.))
-                    .text_color(rgb(0x6b7280))
+                    .text_color(cx.theme().colors.text_secondary)
                     .child(t)
             }))
             .children(items.into_iter().enumerate().map(|(i, item)| {
                 let cmd = item.command.clone();
-                menu_row(i, item.label, item.hint, item.checked, i == selected).on_mouse_down(
+                menu_row(
+                    i,
+                    item.label,
+                    item.hint,
+                    item.checked,
+                    item.icon,
+                    i == selected,
+                    cx,
+                )
+                .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -854,18 +898,18 @@ impl OrgEditor {
         selected: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        panel()
+        panel(cx)
             .min_w(px(220.))
             .child(
                 div()
                     .px_3()
                     .pt_1()
                     .text_size(px(12.))
-                    .text_color(rgb(0x6b7280))
+                    .text_color(cx.theme().colors.text_secondary)
                     .child("Insert"),
             )
             .children(items.into_iter().enumerate().map(|(i, item)| {
-                menu_row(i, item.label, None, false, i == selected).on_mouse_down(
+                menu_row(i, item.label, None, false, item.icon, i == selected, cx).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
@@ -885,6 +929,7 @@ impl OrgEditor {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let today = dates::today();
+        let c = cx.theme().colors;
         let title = month.format("%B %Y").to_string();
         let lead = month.weekday().num_days_from_monday() as i64;
         let grid_start = month - Duration::days(lead);
@@ -892,9 +937,9 @@ impl OrgEditor {
             div()
                 .id(id)
                 .px_2()
-                .rounded_md()
+                .rounded(aster_ui::RADIUS_CONTROL)
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(0xe5e7eb)))
+                .hover(move |s| s.bg(c.subtle_secondary))
                 .child(label)
                 .on_mouse_down(
                     MouseButton::Left,
@@ -926,7 +971,7 @@ impl OrgEditor {
                     .w(px(32.))
                     .text_center()
                     .text_size(px(11.))
-                    .text_color(rgb(0x9ca3af))
+                    .text_color(c.text_tertiary)
                     .child(d)
             }));
         let weeks = (0..6).map(|w| {
@@ -942,21 +987,21 @@ impl OrgEditor {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_md()
+                    .rounded(aster_ui::RADIUS_CONTROL)
                     .cursor_pointer()
                     .text_size(px(13.))
                     .text_color(if is_selected {
-                        rgb(0xffffff)
+                        c.text_on_accent
                     } else if in_month {
-                        rgb(0x1f2937)
+                        c.text_primary
                     } else {
-                        rgb(0xd1d5db)
+                        c.text_disabled
                     })
-                    .when(is_selected, |s| s.bg(rgb(0x3b82f6)))
+                    .when(is_selected, |s| s.bg(c.accent))
                     .when(is_today && !is_selected, |s| {
-                        s.border_1().border_color(rgb(0x3b82f6))
+                        s.border_1().border_color(c.accent)
                     })
-                    .when(!is_selected, |s| s.hover(|s| s.bg(rgb(0xe5e7eb))))
+                    .when(!is_selected, |s| s.hover(move |s| s.bg(c.subtle_secondary)))
                     .child(day.day().to_string())
                     .on_mouse_down(
                         MouseButton::Left,
@@ -975,10 +1020,10 @@ impl OrgEditor {
                 div()
                     .id("date-today")
                     .px_2()
-                    .rounded_md()
+                    .rounded(aster_ui::RADIUS_CONTROL)
                     .cursor_pointer()
-                    .text_color(rgb(0x2563eb))
-                    .hover(|s| s.bg(rgb(0xe5e7eb)))
+                    .text_color(c.accent)
+                    .hover(move |s| s.bg(c.subtle_secondary))
                     .child("Today")
                     .on_mouse_down(
                         MouseButton::Left,
@@ -993,10 +1038,10 @@ impl OrgEditor {
                     div()
                         .id("date-clear")
                         .px_2()
-                        .rounded_md()
+                        .rounded(aster_ui::RADIUS_CONTROL)
                         .cursor_pointer()
-                        .text_color(rgb(0xdc2626))
-                        .hover(|s| s.bg(rgb(0xe5e7eb)))
+                        .text_color(c.critical)
+                        .hover(move |s| s.bg(c.subtle_secondary))
                         .child("Clear")
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1007,7 +1052,7 @@ impl OrgEditor {
                         ),
                 )
             });
-        panel()
+        panel(cx)
             .p_2()
             .text_size(px(14.))
             .child(header)
@@ -1018,46 +1063,51 @@ impl OrgEditor {
     }
 }
 
-fn panel() -> gpui::Div {
-    div()
-        .occlude()
-        .py_1()
-        .bg(rgb(0xffffff))
-        .border_1()
-        .border_color(rgb(0xe5e7eb))
-        .rounded_lg()
-        .shadow_lg()
-        .text_size(px(14.))
-        .line_height(px(22.))
-        .text_color(rgb(0x1f2937))
+fn panel(cx: &gpui::App) -> gpui::Div {
+    aster_ui::components::flyout(cx)
 }
 
+/// A menu row (docs/DESIGN.md §7): 28 px, 4 px radius, keyboard selection uses the hover fill,
+/// optional accent check mark and a caption shortcut hint.
 fn menu_row(
     i: usize,
     label: SharedString,
     hint: Option<SharedString>,
     checked: bool,
+    glyph: Option<Icon>,
     selected: bool,
+    cx: &gpui::App,
 ) -> gpui::Stateful<gpui::Div> {
+    let c = cx.theme().colors;
     div()
         .id(("menu-item", i))
-        .mx_1()
+        .h(px(28.))
         .px_2()
-        .rounded_md()
+        .rounded(aster_ui::RADIUS_CONTROL)
         .flex()
         .items_center()
         .gap_3()
         .cursor_pointer()
-        .when(selected, |s| s.bg(rgb(0xe0e7ff)))
-        .when(!selected, |s| s.hover(|s| s.bg(rgb(0xf3f4f6))))
+        .when(selected, |s| s.bg(c.subtle_secondary))
+        .when(!selected, |s| s.hover(move |s| s.bg(c.subtle_secondary)))
+        // Leading column: a check mark for the current choice, otherwise the item's icon.
         .child(
             div()
-                .w(px(12.))
-                .text_color(rgb(0x2563eb))
-                .child(if checked { "✓" } else { "" }),
+                .w(px(16.))
+                .flex_shrink_0()
+                .map(|d| match (checked, glyph) {
+                    (true, _) => d.child(icon(Icon::Checkmark, px(16.), c.accent)),
+                    (false, Some(g)) => d.child(icon(g, px(16.), c.text_secondary)),
+                    (false, None) => d,
+                }),
         )
         .child(div().flex_1().child(label))
-        .children(hint.map(|h| div().text_size(px(12.)).text_color(rgb(0x9ca3af)).child(h)))
+        .children(hint.map(|h| {
+            div()
+                .text_size(aster_ui::ramp::CAPTION.size)
+                .text_color(c.text_tertiary)
+                .child(h)
+        }))
 }
 
 #[cfg(test)]

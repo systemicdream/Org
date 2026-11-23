@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Aster
+GenericName=Notes
+Comment=Notes, to-dos and plans in plain Org files
+Exec=aster %f
+Icon=io.github.systemicdream.Aster
+Terminal=false
+Categories=Office;Utility;TextEditor;
+Keywords=org;orgmode;notes;todo;agenda;outliner;
+MimeType=text/org;text/x-org;
+StartupNotify=true
+StartupWMClass=io.github.systemicdream.Aster

@@ -13,6 +13,7 @@ aster-doc = { path = "crates/aster-doc" }
 aster-editor = { path = "crates/aster-editor" }
 aster-index = { path = "crates/aster-index" }
 aster-agenda = { path = "crates/aster-agenda" }
+aster-ui = { path = "crates/aster-ui" }
 
 # GPUI moves fast; pin exactly and upgrade deliberately.
 # Features:
@@ -37,6 +38,8 @@ syntect = { version = "=5.3.0", default-features = false, features = [
 ] }
 anyhow = "1"
 notify = "9"
+# Delete from the sidebar moves files to the system trash (macOS Trash, freedesktop trash).
+trash = "5.4"
 dirs = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

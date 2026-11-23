@@ -13,10 +13,12 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, Corners, ElementId, ElementInputHandler, Entity, GlobalElementId,
     ImgResourceLoader, LayoutId, PaintQuad, Pixels, Point, RenderImage, Resource, ShapedLine,
-    Style, TextAlign, TextRun, Window, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    Style, TextAlign, TextRun, Window, fill, point, prelude::*, px, relative, size,
 };
 
-use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout, muted};
+use aster_ui::icons::Icon;
+
+use crate::{EditorMode, Layout, Metrics, OrgEditor, RowLayout};
 
 /// Width of the fold-arrow gutter left of the text.
 fn gutter() -> Pixels {
@@ -49,6 +51,7 @@ pub struct PrepaintState {
     images: Vec<(Bounds<Pixels>, Arc<RenderImage>)>,
     selections: Vec<PaintQuad>,
     glyphs: Vec<(ShapedLine, Point<Pixels>, Pixels)>,
+    icons: Vec<(Bounds<Pixels>, Icon, gpui::Hsla)>,
     cursor: Option<PaintQuad>,
     wrap_updates: Vec<(u64, usize)>,
 }
@@ -178,6 +181,7 @@ impl Element for EditorElement {
 
         let cursor = editor.cursor_offset();
         let cursor_row = editor.row_for_offset(cursor);
+        let block_cursor = editor.vim_mode(cx) == Some(crate::vim::VimMode::Normal);
 
         let mut rows = Vec::with_capacity(editor.visible_rows.len());
         let mut wrap_updates = Vec::new();
@@ -246,12 +250,14 @@ impl Element for EditorElement {
                 .shape_line(s.into(), font_size, &[r], None)
         };
 
-        let selection_color = rgba(0x3b82f640);
+        let colors = editor.colors;
+        let selection_color = colors.selection;
         let sel = editor.selected_range.clone();
         let mut selections = Vec::new();
         let mut backgrounds = Vec::new();
         let mut overlays = Vec::new();
         let mut glyphs = Vec::new();
+        let mut icons = Vec::new();
         let text = editor.doc.text();
 
         for r in rows.iter().filter(|r| r.wrapped.is_some()) {
@@ -273,7 +279,7 @@ impl Element for EditorElement {
                         point(origin.x - px(8.), origin.y),
                         point(bounds.right(), origin.y + r.text_height()),
                     ),
-                    rgb(0xf3f4f6),
+                    colors.subtle_secondary,
                 ));
             }
             if full && editor.row_kind(r.row).left_bar() {
@@ -282,7 +288,7 @@ impl Element for EditorElement {
                         point(origin.x - px(10.), origin.y),
                         point(origin.x - px(7.), origin.y + r.height()),
                     ),
-                    rgb(0xd1d5db),
+                    colors.stroke_control_strong,
                 ));
             }
 
@@ -335,20 +341,29 @@ impl Element for EditorElement {
                 {
                     let folded = editor.folds.is_folded(start);
                     let (glyph, color) = if folded {
-                        ("▸", rgb(0x6b7280).into())
+                        (Icon::ChevronRight, colors.text_secondary)
                     } else {
-                        ("▾", rgb(0xd1d5db).into())
+                        (Icon::ChevronDown, colors.text_disabled)
                     };
-                    let shaped = shape_glyph(window, glyph, color, font_size);
-                    let gy = bounds.top() + r.top + (lh - line_height) / 2.;
+                    // A 12 px chevron centered on the heading's first visual line.
+                    let size = px(12.);
+                    let gy = bounds.top() + r.top + (lh - size) / 2.;
                     let gx = (origin.x - px(18.)).max(bounds.left() + px(4.));
-                    glyphs.push((shaped, point(gx, gy), line_height));
+                    icons.push((
+                        Bounds::new(point(gx, gy), gpui::size(size, size)),
+                        glyph,
+                        color,
+                    ));
                     if folded {
                         let end = w
                             .position_for_index(r.display.text.len(), lh)
                             .unwrap_or_default();
-                        let shaped =
-                            shape_glyph(window, " …", muted(), font_size * (lh / line_height));
+                        let shaped = shape_glyph(
+                            window,
+                            " …",
+                            colors.text_tertiary,
+                            font_size * (lh / line_height),
+                        );
                         glyphs.push((shaped, origin + point(end.x + px(2.), end.y), lh));
                     }
                 }
@@ -364,11 +379,11 @@ impl Element for EditorElement {
         {
             overlays.push(fill(
                 Bounds::from_corners(point(x, y - px(1.)), point(bounds.right(), y + px(1.))),
-                rgb(0x3b82f6),
+                colors.accent,
             ));
             overlays.push(fill(
                 Bounds::new(point(x - px(3.), y - px(3.)), size(px(6.), px(6.))),
-                rgb(0x3b82f6),
+                colors.accent,
             ));
         }
 
@@ -377,7 +392,7 @@ impl Element for EditorElement {
             && text.is_empty()
             && let Some(placeholder) = editor.placeholder.clone()
         {
-            let mut r = run(muted());
+            let mut r = run(colors.text_tertiary);
             r.len = placeholder.len();
             let shaped = window
                 .text_system()
@@ -392,15 +407,34 @@ impl Element for EditorElement {
             .and_then(|i| {
                 let r = &rows[i];
                 let col = r.display.to_display(cursor);
-                let p = r.wrapped.as_ref()?.position_for_index(col, r.line_height)?;
+                let wrapped = r.wrapped.as_ref()?;
+                let p = wrapped.position_for_index(col, r.line_height)?;
+                // Vim Normal mode: a block over the character under the cursor.
+                let width = if block_cursor {
+                    let next = r
+                        .display
+                        .to_display(aster_doc::text::next_grapheme(editor.doc.text(), cursor));
+                    wrapped
+                        .position_for_index(next, r.line_height)
+                        .filter(|q| q.y == p.y && q.x > p.x)
+                        .map_or(font_size * 0.6, |q| q.x - p.x)
+                } else {
+                    px(2.)
+                };
                 Some(Bounds::new(
                     point(text_left + r.indent + p.x, bounds.top() + r.top + p.y),
-                    size(px(2.), r.line_height),
+                    size(width, r.line_height),
                 ))
             });
         let cursor_quad = cursor_rect
-            .filter(|_| sel.is_empty() && editor.cursor_visible)
-            .map(|b| fill(b, rgb(0x3b82f6)));
+            .filter(|_| sel.is_empty() && (editor.cursor_visible || block_cursor))
+            .map(|b| {
+                let mut color = colors.accent;
+                if block_cursor {
+                    color.a = 0.45;
+                }
+                fill(b, color)
+            });
 
         // Keep the cursor visible after keyboard navigation or edits.
         if full
@@ -435,6 +469,7 @@ impl Element for EditorElement {
             images: image_paints,
             selections,
             glyphs,
+            icons,
             cursor: cursor_quad,
             wrap_updates,
         }
@@ -479,6 +514,17 @@ impl Element for EditorElement {
         for (b, img) in prepaint.images.drain(..) {
             window
                 .paint_image(b, Corners::all(px(6.)), img, 0, false)
+                .ok();
+        }
+        for (b, glyph, color) in prepaint.icons.drain(..) {
+            window
+                .paint_svg(
+                    b,
+                    glyph.path().into(),
+                    gpui::TransformationMatrix::unit(),
+                    color,
+                    cx,
+                )
                 .ok();
         }
         for (shaped, origin, lh) in &prepaint.glyphs {

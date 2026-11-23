@@ -15,6 +15,7 @@ mod input;
 mod popup;
 mod preview;
 mod spans;
+pub mod vim;
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -26,12 +27,13 @@ use aster_doc::display::RowDisplay;
 use aster_doc::folds::Folds;
 use aster_doc::{Document, EditOrigin, Selection, ops, search, text};
 use aster_org::{DecoKind, Decoration};
+use aster_ui::ActiveTheme;
 use element::EditorElement;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Font,
     Hsla, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     ScrollHandle, SharedString, Subscription, Task, TextRun, Window, WrappedLine, actions, div,
-    point, prelude::*, px, rgb,
+    point, prelude::*, px,
 };
 use popup::{NavKey, Popup};
 use preview::RowKind;
@@ -96,6 +98,13 @@ actions!(
         Unfold,
         FoldAll,
         UnfoldAll,
+        // Emacs keymap
+        /// Delete to the end of the line (or the line break at its end), copying it.
+        KillLine,
+        /// Org's TAB: fold/unfold the heading at the cursor, otherwise as Tab.
+        OrgCycle,
+        /// Org's Shift+TAB: fold or unfold every heading (in a table, the previous cell).
+        OrgGlobalCycle,
     ]
 );
 
@@ -357,6 +366,9 @@ struct SearchState {
 }
 
 pub struct OrgEditor {
+    /// Theme colors (docs/DESIGN.md), updated when the theme changes.
+    colors: aster_ui::Colors,
+    dark: bool,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
     mode: EditorMode,
@@ -409,6 +421,7 @@ pub struct OrgEditor {
     known_tags: Vec<String>,
     /// Open menu, date picker, tag input or slash menu.
     popup: Option<Popup>,
+    vim: vim::VimState,
     /// Where the last popup was shown, so follow-up popups appear in the same place.
     last_popup_anchor: Point<Pixels>,
     _subscriptions: Vec<Subscription>,
@@ -445,8 +458,18 @@ impl OrgEditor {
                 this.cursor_visible = true;
                 cx.notify();
             }),
+            // Re-style when the theme (light/dark) changes.
+            cx.observe_global::<aster_ui::Theme>(|this, cx| {
+                this.colors = cx.theme().colors;
+                this.dark = cx.theme().is_dark();
+                this.highlight_cache.clear();
+                this.recompute_lines();
+                cx.notify();
+            }),
         ];
         let mut this = Self {
+            colors: cx.theme().colors,
+            dark: cx.theme().is_dark(),
             focus_handle,
             scroll_handle: ScrollHandle::new(),
             mode,
@@ -482,6 +505,7 @@ impl OrgEditor {
             blink_task: None,
             known_tags: Vec::new(),
             popup: None,
+            vim: vim::VimState::default(),
             last_popup_anchor: Point::default(),
             _subscriptions: subscriptions,
         };
@@ -761,7 +785,7 @@ impl OrgEditor {
             })
             .collect();
         self.org_spans = if self.mode == EditorMode::Full {
-            let mut s = spans::style_spans(self.doc.headings(), self.doc.text());
+            let mut s = spans::style_spans(self.doc.headings(), self.doc.text(), &self.colors);
             s.extend(self.code_spans());
             // Stable: spans starting at the same offset keep their override order.
             s.sort_by_key(|(r, _)| r.start);
@@ -854,13 +878,12 @@ impl OrgEditor {
             };
             let code = &self.doc.text()[d.range.clone()];
             let mut h = DefaultHasher::new();
-            (lang, code).hash(&mut h);
+            (lang, code, self.dark).hash(&mut h);
             let key = h.finish();
-            let spans = self
-                .highlight_cache
-                .get(&key)
-                .cloned()
-                .unwrap_or_else(|| std::rc::Rc::new(highlight::highlight(lang, code)));
+            let spans =
+                self.highlight_cache.get(&key).cloned().unwrap_or_else(|| {
+                    std::rc::Rc::new(highlight::highlight(lang, code, self.dark))
+                });
             out.extend(
                 spans
                     .iter()
@@ -954,6 +977,11 @@ impl OrgEditor {
         let mut h = DefaultHasher::new();
         self.row_meta.get(row).map(|m| m.hash).hash(&mut h);
         scale.to_bits().hash(&mut h);
+        // The text size (a setting) changes how lines wrap too.
+        self.metrics
+            .as_ref()
+            .map(|m| f32::from(m.font_size).to_bits())
+            .hash(&mut h);
         wrap_width.map(|w| f32::from(w).to_bits()).hash(&mut h);
         h.finish()
     }
@@ -1075,7 +1103,10 @@ impl OrgEditor {
         let range = display.line.clone();
         let to_disp = |r: &Range<usize>| display.display_range(r.clone());
         let in_row = |r: &Range<usize>| r.start >= range.start && r.start <= range.end;
-        let mut out: spans::Spans = vec![(0..display.text.len(), self.row_kind(row).base_style())];
+        let mut out: spans::Spans = vec![(
+            0..display.text.len(),
+            self.row_kind(row).base_style(&self.colors),
+        )];
 
         let i = self
             .org_spans
@@ -1088,7 +1119,7 @@ impl OrgEditor {
         );
         if self.mode == EditorMode::Full {
             for d in self.inline_decorations(&range) {
-                if let Some(st) = preview::inline_style(&d.kind) {
+                if let Some(st) = preview::inline_style(&d.kind, &self.colors) {
                     out.push((to_disp(&d.range), st));
                 }
             }
@@ -1101,14 +1132,14 @@ impl OrgEditor {
                 .take_while(|(_, m)| in_row(m))
             {
                 let bg = if Some(i + j) == search.active {
-                    0xfb923c99
+                    self.colors.selection
                 } else {
-                    0xfde04780
+                    self.colors.accent_subtle
                 };
                 out.push((
                     to_disp(m),
                     spans::SpanStyle {
-                        background: Some(gpui::rgba(bg).into()),
+                        background: Some(bg),
                         ..Default::default()
                     },
                 ));
@@ -1907,7 +1938,59 @@ impl OrgEditor {
         }
     }
 
+    fn kill_line(&mut self, _: &KillLine, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.selected_range.is_empty() {
+            return self.cut_selection(cx);
+        }
+        let text = self.doc.text();
+        let cursor = self.cursor_offset();
+        let mut end = text[cursor..].find('\n').map_or(text.len(), |i| cursor + i);
+        if end > cursor && text[..end].ends_with('\r') {
+            end -= 1;
+        }
+        if end == cursor {
+            end = text::next_grapheme(text, cursor);
+        }
+        if end == cursor {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text[cursor..end].to_string()));
+        self.edit(cursor..end, "", EditOrigin::Delete, cx);
+    }
+
+    fn org_cycle(&mut self, _: &OrgCycle, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == EditorMode::Full
+            && !self.cursor_in_table()
+            && self.cursor_on_heading_line()
+            && let Some(h) = self.heading_at_cursor()
+        {
+            self.toggle_fold_heading(&h, cx);
+            return;
+        }
+        self.tab(&Tab, window, cx);
+    }
+
+    fn org_global_cycle(
+        &mut self,
+        _: &OrgGlobalCycle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != EditorMode::Full || self.cursor_in_table() {
+            return self.outdent(&Outdent, window, cx);
+        }
+        if self.folds.is_empty() {
+            self.fold_all(&FoldAll, window, cx);
+        } else {
+            self.unfold_all(&UnfoldAll, window, cx);
+        }
+    }
+
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        self.cut_selection(cx);
+    }
+
+    fn cut_selection(&mut self, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.doc.text()[self.selected_range.clone()].to_string(),
@@ -2128,6 +2211,7 @@ impl OrgEditor {
         self.close_popup(window, cx);
         window.focus(&self.focus_handle);
         self.goal_x = None;
+        self.vim_on_click();
 
         if self.mode == EditorMode::Full && self.click_widget(event, window, cx) {
             return;
@@ -2280,13 +2364,23 @@ impl OrgEditor {
 
 impl Render for OrgEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // With Vim keys on, the mode is part of the key context ("OrgEditor && vim_normal").
+        let mut key_context = gpui::KeyContext::new_with_defaults();
+        key_context.add(KEY_CONTEXT);
+        if let Some(mode) = self.vim_mode(cx) {
+            key_context.add(match mode {
+                vim::VimMode::Normal => "vim_normal",
+                vim::VimMode::Insert => "vim_insert",
+                vim::VimMode::Visual | vim::VimMode::VisualLine => "vim_visual",
+            });
+        }
         let base = div()
             .id(if self.mode == EditorMode::Full {
                 "org-editor"
             } else {
                 "org-input"
             })
-            .key_context(KEY_CONTEXT)
+            .key_context(key_context)
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -2316,6 +2410,9 @@ impl Render for OrgEditor {
             .on_action(cx.listener(Self::shift_enter))
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::tab))
+            .on_action(cx.listener(Self::kill_line))
+            .on_action(cx.listener(Self::org_cycle))
+            .on_action(cx.listener(Self::org_global_cycle))
             .on_action(cx.listener(Self::outdent))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
@@ -2333,7 +2430,8 @@ impl Render for OrgEditor {
                 .w_full()
                 .overflow_hidden()
                 .child(EditorElement::new(cx.entity())),
-            EditorMode::Full => base
+            EditorMode::Full => self
+                .vim_actions(base, cx)
                 .on_action(cx.listener(Self::toggle_done))
                 .on_action(cx.listener(Self::cycle_todo_backward))
                 .on_action(cx.listener(Self::insert_heading))
@@ -2366,11 +2464,6 @@ impl Focusable for OrgEditor {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
-}
-
-/// Muted color for UI chrome inside the editor (fold arrows, ellipses, placeholders).
-fn muted() -> Hsla {
-    rgb(0x9ca3af).into()
 }
 
 /// Whether `#+STARTUP:` asks for the file to open folded (`overview` / `fold`).

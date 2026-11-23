@@ -342,6 +342,34 @@ Deferred: a system-wide capture hotkey (GPUI has no global shortcuts; needs a sm
 helper), configurable capture templates and targets, clocking/effort sums in the agenda, habits,
 `CLOSED:` stamping when marking done, block agenda/custom views.
 
+
+### Phase 7 task list
+
+- [x] Design guidelines: Fluent (early Windows 11) adapted for macOS/Linux ([DESIGN.md](DESIGN.md))
+- [x] `aster-ui`: theme tokens (light/dark), type ramp, radii, elevation, WCAG contrast test
+- [x] Shared components: flyout, dialog, list item with selection indicator, text box, selector
+      tab, buttons, pills, captions
+- [x] Every view uses tokens (no hard-coded colors); follows the system appearance live;
+      `ASTER_APPEARANCE=light|dark` override
+- [x] Layout: base layer + rounded content layer; transparent title bar on macOS
+- [x] Fluent UI System Icons (bundled SVG, MIT) with a command bar on every platform
+- [x] System accent color with per-theme contrast-safe shades
+- [x] Settings (appearance, accent, text size, capture templates and targets, keymap) with a
+      settings page; saved as JSON in the platform config dir (`ASTER_SETTINGS_FILE` overrides)
+- [x] First run: create or open a notes folder (a new one gets the welcome guide and a starter
+      inbox); empty states for "no note open" and "empty folder"
+- [x] Optional Emacs keymap (movement and kill/yank, Org TAB/S-TAB cycling, M-RET/M-arrows,
+      `C-c C-t`/`C-c C-w`/`C-c C-x C-a`, `C-x` file commands, `C-c a`/`C-c c`, `M-x`)
+- [x] Create / rename / delete (to the system trash) notes and folders from the sidebar, with a
+      right-click menu; the index tracks folders and folder renames from outside Aster
+- [x] Optional Vim keymap: Normal/Insert/Visual(-line) modes, motions, operators (`dd`, `dw`,
+      `cw`, `yy`, `p`, …), evil-org-style folding and `>>`/`<<`, `/` find, `:` commands
+- [x] Custom accent color (hex), alongside System and the preset swatches
+- [x] Transparency effects (Mica-like blurred base layer) where the desktop supports it
+- [x] App icon: macOS `.icns` and `.app` bundle script, Linux desktop entry and hicolor icons
+      with an install script, Dock icon for unbundled runs, Wayland app id
+- [x] Hands-on test on macOS and Linux
+
 ---
 
 ## 10. Risks

@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use aster_org::{BlockKind, DecoKind, Decoration, HeadingInfo};
-use gpui::{Hsla, rgb, rgba};
+use aster_ui::Colors;
 
 use crate::spans::SpanStyle;
 
@@ -63,11 +63,11 @@ impl RowKind {
     }
 
     /// Base style for the whole line.
-    pub fn base_style(&self) -> SpanStyle {
+    pub fn base_style(&self, colors: &Colors) -> SpanStyle {
         match self {
             RowKind::Title => SpanStyle {
                 bold: true,
-                color: Some(rgb(0x111827).into()),
+                color: Some(colors.text_primary),
                 ..Default::default()
             },
             RowKind::Keyword
@@ -75,22 +75,18 @@ impl RowKind {
             | RowKind::Planning
             | RowKind::BlockDelimiter(_)
             | RowKind::Comment => SpanStyle {
-                color: Some(muted()),
+                color: Some(colors.text_tertiary),
                 italic: *self == RowKind::Comment,
                 ..Default::default()
             },
             RowKind::Quote => SpanStyle {
                 italic: true,
-                color: Some(rgb(0x4b5563).into()),
+                color: Some(colors.text_secondary),
                 ..Default::default()
             },
             _ => SpanStyle::default(),
         }
     }
-}
-
-pub fn muted() -> Hsla {
-    rgb(0x9ca3af).into()
 }
 
 /// Kind and outline depth (for indentation) of every line.
@@ -158,8 +154,7 @@ fn rows_in(line_starts: &[usize], text_len: usize, range: &Range<usize>) -> Rang
 }
 
 /// Inline style for a decoration in its decorated (not revealed) form.
-pub fn inline_style(kind: &DecoKind) -> Option<SpanStyle> {
-    let code_bg: Hsla = rgba(0xe5e7eb99).into();
+pub fn inline_style(kind: &DecoKind, colors: &Colors) -> Option<SpanStyle> {
     Some(match kind {
         DecoKind::Bold => SpanStyle {
             bold: true,
@@ -175,38 +170,35 @@ pub fn inline_style(kind: &DecoKind) -> Option<SpanStyle> {
         },
         DecoKind::Strike => SpanStyle {
             strike: true,
-            color: Some(muted()),
+            color: Some(colors.text_tertiary),
             ..Default::default()
         },
         DecoKind::Verbatim | DecoKind::Code => SpanStyle {
             mono: true,
-            background: Some(code_bg),
-            color: Some(rgb(0xbe185d).into()),
+            background: Some(colors.subtle_secondary),
+            color: Some(colors.text_primary),
             ..Default::default()
         },
         DecoKind::Link { .. } => SpanStyle {
-            color: Some(rgb(0x2563eb).into()),
+            color: Some(colors.accent),
             underline: true,
             ..Default::default()
         },
         DecoKind::Timestamp => SpanStyle {
-            color: Some(rgb(0x0f766e).into()),
-            background: Some(rgba(0xccfbf199).into()),
+            color: Some(colors.accent),
+            background: Some(colors.accent_subtle),
             ..Default::default()
         },
         DecoKind::Checkbox { checked, .. } => SpanStyle {
-            color: Some(
-                if *checked {
-                    rgb(0x16a34a)
-                } else {
-                    rgb(0x6b7280)
-                }
-                .into(),
-            ),
+            color: Some(if *checked {
+                colors.success
+            } else {
+                colors.text_secondary
+            }),
             ..Default::default()
         },
         DecoKind::Bullet => SpanStyle {
-            color: Some(rgb(0x6b7280).into()),
+            color: Some(colors.text_tertiary),
             ..Default::default()
         },
         _ => return None,

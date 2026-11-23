@@ -7,10 +7,13 @@ use aster_agenda::{AgendaItem, ItemKind};
 use aster_doc::dates;
 use aster_editor::{EditorEvent, OrgEditor};
 use aster_index::Index;
+use aster_ui::components::{self, ButtonKind};
+use aster_ui::icons::Icon;
+use aster_ui::{ActiveTheme, Colors, ramp};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, MouseButton,
-    SharedString, Subscription, Window, actions, div, prelude::*, px, rgb,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding, MouseButton,
+    SharedString, Subscription, Window, actions, div, prelude::*, px,
 };
 
 actions!(
@@ -251,22 +254,23 @@ impl AgendaView {
     // ---- rendering ----
 
     fn tab(&self, label: &'static str, mode: Mode, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.mode == mode;
-        div()
-            .id(label)
-            .px_3()
-            .py_0p5()
-            .rounded_md()
-            .cursor_pointer()
-            .when(active, |d| d.bg(rgb(0xe0e7ff)).text_color(rgb(0x1e3a8a)))
-            .when(!active, |d| {
-                d.text_color(rgb(0x4b5563)).hover(|d| d.bg(rgb(0xf3f4f6)))
-            })
-            .child(label)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| this.set_mode(mode, window, cx)),
-            )
+        components::selector_tab(label, label, self.mode == mode, cx).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| this.set_mode(mode, window, cx)),
+        )
+    }
+
+    fn nav_icon(
+        &self,
+        id: &'static str,
+        glyph: Icon,
+        cx: &mut Context<Self>,
+        f: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> impl IntoElement {
+        components::icon_button(id, glyph, cx).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| f(this, window, cx)),
+        )
     }
 
     fn nav_button(
@@ -276,36 +280,28 @@ impl AgendaView {
         cx: &mut Context<Self>,
         f: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> impl IntoElement {
-        div()
-            .id(id)
-            .px_2()
-            .rounded_md()
-            .cursor_pointer()
-            .text_color(rgb(0x4b5563))
-            .hover(|d| d.bg(rgb(0xf3f4f6)))
-            .child(label)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| f(this, window, cx)),
-            )
+        components::button(id, label, ButtonKind::Subtle, cx).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| f(this, window, cx)),
+        )
     }
 }
 
-fn kind_label(kind: &ItemKind) -> (String, u32) {
+fn kind_label(kind: &ItemKind, c: &Colors) -> (String, Hsla) {
     match kind {
-        ItemKind::Scheduled { late: 0 } => ("Scheduled".into(), 0x6b7280),
-        ItemKind::Scheduled { late } => (format!("{late} d. late"), 0xd97706),
-        ItemKind::Deadline { days: 0 } => ("Due today".into(), 0xdc2626),
-        ItemKind::Deadline { days } if *days < 0 => (format!("{} d. overdue", -days), 0xdc2626),
-        ItemKind::Deadline { days } => (format!("Due in {days} d."), 0xea580c),
-        ItemKind::Timestamp => (String::new(), 0x6b7280),
-        ItemKind::Entry => (String::new(), 0x6b7280),
+        ItemKind::Scheduled { late: 0 } => ("Scheduled".into(), c.text_secondary),
+        ItemKind::Scheduled { late } => (format!("{late} d. late"), c.caution),
+        ItemKind::Deadline { days: 0 } => ("Due today".into(), c.critical),
+        ItemKind::Deadline { days } if *days < 0 => (format!("{} d. overdue", -days), c.critical),
+        ItemKind::Deadline { days } => (format!("Due in {days} d."), c.caution),
+        ItemKind::Timestamp | ItemKind::Entry => (String::new(), c.text_secondary),
     }
 }
 
 impl Render for AgendaView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let today = dates::today();
+        let colors = cx.theme().colors;
         let rows = self.rows(cx);
         let total_items = rows.iter().filter(|r| matches!(r, Row::Item(_))).count();
         self.selected = self.selected.min(total_items.saturating_sub(1));
@@ -335,43 +331,46 @@ impl Render for AgendaView {
                             div()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(if is_today {
-                                    rgb(0x2563eb)
+                                    colors.accent
                                 } else {
-                                    rgb(0x111827)
+                                    colors.text_primary
                                 })
                                 .child(date.format("%A %-d %B").to_string()),
                         )
-                        .child(div().text_size(px(12.)).text_color(rgb(0x9ca3af)).child(
-                            if is_today {
-                                "Today".to_string()
-                            } else if n == 0 {
-                                "Nothing scheduled".into()
-                            } else {
-                                String::new()
-                            },
-                        ))
+                        .child(
+                            div()
+                                .text_size(ramp::CAPTION.size)
+                                .text_color(colors.text_tertiary)
+                                .child(if is_today {
+                                    "Today".to_string()
+                                } else if n == 0 {
+                                    "Nothing scheduled".into()
+                                } else {
+                                    String::new()
+                                }),
+                        )
                         .into_any_element()
                 }
                 Row::Item(item) => {
                     let i = item_i;
                     item_i += 1;
                     let selected = i == self.selected;
-                    let (label, label_color) = kind_label(&item.kind);
+                    let (label, label_color) = kind_label(&item.kind, &colors);
                     let file = item.rel.trim_end_matches(".org").to_string();
                     let (path, offset) = (item.path.clone(), item.offset);
                     let (path2, offset2) = (item.path.clone(), item.offset);
                     let todo = item.todo.clone().map(|t| {
                         let (fg, bg) = if item.done {
-                            (0x16a34a, 0xdcfce7)
+                            (colors.success, colors.success_bg)
                         } else {
-                            (0xdc2626, 0xfee2e2)
+                            (colors.critical, colors.critical_bg)
                         };
                         div()
                             .id(("agenda-todo", i))
                             .px_1()
-                            .rounded_sm()
-                            .bg(rgb(bg))
-                            .text_color(rgb(fg))
+                            .rounded(aster_ui::RADIUS_CONTROL)
+                            .bg(bg)
+                            .text_color(fg)
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .cursor_pointer()
                             .child(t)
@@ -383,38 +382,30 @@ impl Render for AgendaView {
                                 }),
                             )
                     });
-                    div()
-                        .id(("agenda-item", i))
+                    components::list_item(("agenda-item", i), selected && focused, cx)
                         .mx_2()
-                        .px_2()
-                        .rounded_md()
-                        .flex()
-                        .items_center()
                         .gap_3()
-                        .cursor_pointer()
-                        .when(selected && focused, |d| d.bg(rgb(0xe0e7ff)))
-                        .when(selected && !focused, |d| d.bg(rgb(0xf3f4f6)))
-                        .when(!selected, |d| d.hover(|d| d.bg(rgb(0xf9fafb))))
+                        .when(selected && !focused, |d| d.bg(colors.subtle_tertiary))
                         .child(
                             div()
                                 .w(px(92.))
                                 .flex_shrink_0()
-                                .text_size(px(13.))
-                                .text_color(rgb(0x6b7280))
+                                .text_size(ramp::CAPTION.size)
+                                .text_color(colors.text_secondary)
                                 .child(item.time.clone().unwrap_or_default()),
                         )
                         .child(
                             div()
                                 .w(px(110.))
                                 .flex_shrink_0()
-                                .text_size(px(13.))
-                                .text_color(rgb(label_color))
+                                .text_size(ramp::CAPTION.size)
+                                .text_color(label_color)
                                 .child(label),
                         )
                         .children(todo)
                         .children(item.priority.map(|p| {
                             div()
-                                .text_color(rgb(0xea580c))
+                                .text_color(colors.caution)
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child(format!("[#{p}]"))
                         }))
@@ -424,24 +415,29 @@ impl Render for AgendaView {
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .when(item.done, |d| d.text_color(rgb(0x9ca3af)).line_through())
+                                .when(item.done, |d| {
+                                    d.text_color(colors.text_tertiary).line_through()
+                                })
                                 .child(item.title.clone()),
                         )
                         .child(
-                            div().text_size(px(12.)).text_color(rgb(0x6b7280)).child(
-                                item.tags
-                                    .iter()
-                                    .map(|t| format!(":{t}"))
-                                    .collect::<String>()
-                                    + if item.tags.is_empty() { "" } else { ":" },
-                            ),
+                            div()
+                                .text_size(ramp::CAPTION.size)
+                                .text_color(colors.text_secondary)
+                                .child(
+                                    item.tags
+                                        .iter()
+                                        .map(|t| format!(":{t}"))
+                                        .collect::<String>()
+                                        + if item.tags.is_empty() { "" } else { ":" },
+                                ),
                         )
                         .child(
                             div()
                                 .w(px(140.))
                                 .flex_shrink_0()
-                                .text_size(px(12.))
-                                .text_color(rgb(0x9ca3af))
+                                .text_size(ramp::CAPTION.size)
+                                .text_color(colors.text_tertiary)
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .child(file),
@@ -466,8 +462,8 @@ impl Render for AgendaView {
             .size_full()
             .flex()
             .flex_col()
-            .text_size(px(14.))
-            .line_height(px(26.))
+            .text_size(ramp::BODY.size)
+            .line_height(px(32.))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::open))
@@ -488,37 +484,32 @@ impl Render for AgendaView {
                     .items_center()
                     .gap_2()
                     .border_b_1()
-                    .border_color(rgb(0xe5e7eb))
-                    .child(div().font_weight(gpui::FontWeight::BOLD).text_size(px(18.)).mr_2().child("Agenda"))
+                    .border_color(colors.stroke_divider)
+                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_size(ramp::SUBTITLE.size).mr_4().child("Agenda"))
                     .child(self.tab("Day", Mode::Day, cx))
                     .child(self.tab("Week", Mode::Week, cx))
                     .child(self.tab("To-do", Mode::Todo, cx))
                     .child(self.tab("Search", Mode::Search, cx))
                     .child(div().flex_1())
                     .when(matches!(self.mode, Mode::Day | Mode::Week), |d| {
-                        d.child(self.nav_button("agenda-back", "‹", cx, |t, _, cx| t.step(false, cx)))
+                        d.child(self.nav_icon("agenda-back", Icon::ChevronLeft, cx, |t, _, cx| t.step(false, cx)))
                             .child(self.nav_button("agenda-today", "Today", cx, |t, w, cx| t.today(&AgendaToday, w, cx)))
-                            .child(self.nav_button("agenda-forward", "›", cx, |t, _, cx| t.step(true, cx)))
+                            .child(self.nav_icon("agenda-forward", Icon::ChevronRight, cx, |t, _, cx| t.step(true, cx)))
                     }),
             )
             .child(
                 div()
                     .px_4()
                     .pt_2()
-                    .text_color(rgb(0x6b7280))
-                    .text_size(px(13.))
+                    .text_color(colors.text_secondary)
+                    .text_size(ramp::CAPTION.size)
                     .child(SharedString::from(range_label)),
             )
             .when(self.mode == Mode::Search, |d| {
                 d.child(
-                    div()
+                    components::text_box(self.query.focus_handle(cx).is_focused(window), cx)
                         .mx_4()
                         .mt_2()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgb(0xd1d5db))
                         .child(self.query.clone()),
                 )
             })
@@ -530,7 +521,7 @@ impl Render for AgendaView {
                     .pb_6()
                     .children(list)
                     .when(empty, |d| {
-                        d.child(div().px_4().pt_4().text_color(rgb(0x9ca3af)).child(match self.mode {
+                        d.child(div().px_4().pt_4().text_color(colors.text_tertiary).child(match self.mode {
                             Mode::Todo => "No open to-dos. Nice.",
                             _ => "No matches. Try a tag like +work, or TODO=\"NEXT\".",
                         }))
@@ -541,9 +532,9 @@ impl Render for AgendaView {
                     .px_4()
                     .py_1()
                     .border_t_1()
-                    .border_color(rgb(0xe5e7eb))
-                    .text_size(px(12.))
-                    .text_color(rgb(0x9ca3af))
+                    .border_color(colors.stroke_divider)
+                    .text_size(ramp::CAPTION.size)
+                    .text_color(colors.text_tertiary)
                     .child("↑↓ select · Enter open · x done · d/w/t/s views · b/f back/forward · . today · Esc close"),
             )
     }
