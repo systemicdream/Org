@@ -27,10 +27,10 @@ or shadow in a view** — use the token, so light/dark themes and future accent 
 
 | Layer | Use | Light | Dark |
 |---|---|---|---|
-| **Base (Mica)** | Window background behind the sidebar and title area | `#F3F3F3` | `#202020` |
-| **Layer** | The main content area (editor, agenda), as a card inset into the base with an 8 px top-left radius and a hairline stroke | `#FBFBFB` | `#282828` |
+| **Base (Mica)** | Window background behind the sidebar and title area | `#F3F3F3` | `#0E0E0E` |
+| **Layer** | The main content area (editor, agenda), as a card inset into the base with an 8 px top-left radius and a hairline stroke | `#FBFBFB` | `#161616` |
 | **Card** | Grouped content inside a layer (settings groups, agenda days) | `#FFFFFF` @ 70 % | `#FFFFFF` @ 5 % |
-| **Flyout (Acrylic)** | Menus, pickers, date picker, command palette, capture | `#FCFCFC` | `#2C2C2C` |
+| **Flyout (Acrylic)** | Menus, pickers, date picker, command palette, capture | `#FCFCFC` | `#1E1E1E` |
 | **Smoke** | Dims the app behind modal dialogs | `#000000` @ 30 % | `#000000` @ 30 % |
 
 - **Transparency effects** (on by default, Settings → Transparency effects): the window gets a
@@ -81,7 +81,7 @@ when testing.
 | `control.default` | `#FFFFFF` @ 70 % | `#FFFFFF` @ 6 % | Standard button, text box rest |
 | `control.secondary` | `#F9F9F9` @ 50 % | `#FFFFFF` @ 8 % | Control hover |
 | `control.tertiary` | `#F9F9F9` @ 30 % | `#FFFFFF` @ 4 % | Control pressed |
-| `control.input_active` | `#FFFFFF` | `#1E1E1E` | Focused text box |
+| `control.input_active` | `#FFFFFF` | `#121212` | Focused text box |
 | `subtle.secondary` | `#000000` @ 3.7 % | `#FFFFFF` @ 6 % | Hover on list items / subtle buttons |
 | `subtle.tertiary` | `#000000` @ 2.4 % | `#FFFFFF` @ 4 % | Pressed, selected list item |
 
