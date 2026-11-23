@@ -1,6 +1,6 @@
-# Aster — Project Plan
+# Org — Project Plan
 
-Aster is a modern, cross-platform Org mode client built with [GPUI](https://www.gpui.rs/).
+Org is a modern, cross-platform Org mode client built with [GPUI](https://www.gpui.rs/).
 It brings Org's note-taking and organization workflow to people who are interested in
 Org mode but put off by Emacs — keeping the Org file format, with a modern, discoverable editor.
 
@@ -39,8 +39,8 @@ fidelity and the optional Emacs keymap, but we don't design the UX around them.
    Rich widgets (checkboxes, link chips, tables, date pills) are overlays on real text.
 4. **Structure is first-class.** Headings are objects you can fold, drag, move, tag, schedule,
    and refile with the mouse or keyboard.
-5. **No sync.** Aster reads and writes files in a folder. Users choose their own sync
-   (iCloud, Dropbox, Syncthing, Git, …). Aster must behave well when files change underneath it.
+5. **No sync.** Org reads and writes files in a folder. Users choose their own sync
+   (iCloud, Dropbox, Syncthing, Git, …). Org must behave well when files change underneath it.
 
 ---
 
@@ -88,27 +88,27 @@ from GPUI API churn.
 
 ```
 crates/
-  aster-org/      Org parser, lossless syntax tree, serializer. No GPUI. Heavily tested.
-  aster-doc/      Document model: rope buffer, edit transactions, undo/redo, incremental
+  org-syntax/      Org parser, lossless syntax tree, serializer. No GPUI. Heavily tested.
+  org-doc/      Document model: rope buffer, edit transactions, undo/redo, incremental
                   reparse, structural ops (promote/demote, move subtree, cycle TODO, …).
-  aster-index/    Workspace index: files, headings, tags, IDs, TODOs, timestamps, links,
+  org-index/    Workspace index: files, headings, tags, IDs, TODOs, timestamps, links,
                   full-text search. File watching. Disposable cache.
-  aster-agenda/   Agenda queries and views over the index (pure logic).
-  aster-editor/   GPUI editor view: layout, live-preview rendering, input/IME, selection,
+  org-agenda/   Agenda queries and views over the index (pure logic).
+  org-editor/   GPUI editor view: layout, live-preview rendering, input/IME, selection,
                   folding, inline widgets.
-  aster-ui/       Theme, design tokens, shared components, icons.
-  aster-app/      App shell: window, sidebar, tabs, command palette, agenda view, capture,
+  org-ui/       Theme, design tokens, shared components, icons.
+  org-app/      App shell: window, sidebar, tabs, command palette, agenda view, capture,
                   settings, onboarding, state persistence.
 ```
 
 ### Dependency direction
 
 ```
-aster-app ──► aster-editor ──► aster-doc ──► aster-org
+org-app ──► org-editor ──► org-doc ──► org-syntax
     │              │
-    ├──► aster-ui ◄┘
-    ├──► aster-agenda ──► aster-index ──► aster-org
-    └──► aster-index
+    ├──► org-ui ◄┘
+    ├──► org-agenda ──► org-index ──► org-syntax
+    └──► org-index
 ```
 
 ### Technology choices
@@ -189,7 +189,7 @@ The editor is the product. It deserves the most care and the most time.
 
 ## 7. Working without built-in sync
 
-Because users pick their own sync tool, Aster must be robust to external changes:
+Because users pick their own sync tool, Org must be robust to external changes:
 
 - Watch the workspace folder; reload clean buffers silently when files change on disk.
 - If a buffer has unsaved edits and the file changes externally, show a clear conflict
@@ -219,25 +219,25 @@ Because users pick their own sync tool, Aster must be robust to external changes
 | Phase | Goal | Exit criteria |
 |---|---|---|
 | **0. Spikes** | Retire the big unknowns | GPUI window builds/runs on macOS and Linux in CI. Minimal multi-line text view with IME + selection. `orgize` round-trips the corpus byte-for-byte (or decision to write our own parser). |
-| **1. Core** | `aster-org`, `aster-doc` | Parser, serializer, transactions, undo, structural ops — all tested headless. |
+| **1. Core** | `org-syntax`, `org-doc` | Parser, serializer, transactions, undo, structural ops — all tested headless. |
 | **2. Editor MVP** | Edit one file well | Open/save/autosave, styled source, folding, selection, clipboard, find/replace, soft wrap. |
 | **3. Live preview** | The modern feel | Hidden markup with cursor reveal, checkboxes, link chips, tables, src highlighting, images. |
 | **4. Structure & metadata** | Org power, approachable | Heading gutter + drag, move/promote, TODO/priority/tag UI, date picker, properties panel, slash menu, command palette. |
 | **5. Workspace** | Many files | Folder workspace, file tree, quick switcher, full-text search, tag browser, `id:`/file links, external-change handling. |
 | **6. Organization** | The Org workflow | Agenda views, capture (with global hotkey), refile picker, archive. |
 | **7. Onboarding & polish** | Ready for newcomers | Welcome notebook, templates, tips, settings UI, themes (light/dark), Emacs keymap option. |
-| **8. First release (0.1.0)** | Distribution | Versioned releases from CI: macOS `.dmg`, Flatpak, `.deb`, `.rpm`; update notifications, local crash reports, docs site. 1.0 comes later, once Aster has been used in the wild. |
+| **8. First release (0.1.0)** | Distribution | Versioned releases from CI: macOS `.dmg`, Flatpak, `.deb`, `.rpm`; update notifications, local crash reports, docs site. 1.0 comes later, once Org has been used in the wild. |
 
 Phases 2–4 are where most of the effort lands.
 
 ### Phase 0 task list
 
-- [x] Set up Cargo workspace (`aster-org`, `aster-editor`, `aster-app`; other crates are added in the phase that needs them)
+- [x] Set up Cargo workspace (`org-syntax`, `org-editor`, `org-app`; other crates are added in the phase that needs them)
 - [x] CI: fmt, clippy, test, build on macOS and Linux (`.github/workflows/ci.yml`)
 - [x] GPUI window with app menu, keybindings, open/save a file (atomic writes)
 - [x] Spike: multi-line text element with cursor, selection, IME via `EntityInputHandler`
 - [x] Evaluate `gpui-component` editor vs. raw GPUI → raw GPUI ([0002](decisions/0002-editor-foundation.md))
-- [x] Assemble round-trip test corpus (`crates/aster-org/tests/corpus`)
+- [x] Assemble round-trip test corpus (`crates/org-syntax/tests/corpus`)
 - [x] Spike: `orgize` round-trip + incremental reparse; decide parser strategy ([0001](decisions/0001-org-parser.md))
 - [x] Record decisions in `docs/decisions/` (lightweight ADRs)
 - [x] Linux build verified locally (Nobara 44 / Fedora: fmt, clippy `-D warnings`, tests, build)
@@ -246,13 +246,13 @@ Phases 2–4 are where most of the effort lands.
 
 ### Phase 1 task list
 
-- [x] `aster-doc`: transactions (batched non-overlapping edits, inverse, position mapping)
+- [x] `org-doc`: transactions (batched non-overlapping edits, inverse, position mapping)
 - [x] Undo/redo with grouping: typing and delete runs coalesce; newlines, pauses (>1s), cursor
       jumps and commands start new steps; an IME composition is one step
 - [x] Structural ops: cycle TODO (honours `#+TODO:`), promote/demote heading or subtree, move
       subtree among siblings, insert sibling heading, toggle checkbox
 - [x] Ops preserve CRLF and no-trailing-newline files; randomized test undoes back to exact bytes
-- [x] Editor wired to `aster-doc`, with default keybindings for all of the above
+- [x] Editor wired to `org-doc`, with default keybindings for all of the above
 - [x] Text storage decision: plain `String` for now ([0003](decisions/0003-text-storage.md))
 - [x] Hands-on test of the new commands
 
@@ -275,7 +275,7 @@ Deferred: error messages in the UI (currently stderr), reloading files changed o
 
 ### Phase 3 task list
 
-- [x] Decorations from the syntax tree (`aster-org`) and a tested buffer↔display offset map (`aster-doc`)
+- [x] Decorations from the syntax tree (`org-syntax`) and a tested buffer↔display offset map (`org-doc`)
 - [x] Hide markup unless the cursor is in it: emphasis markers, link brackets/targets, heading
       stars, `#+TITLE:` prefix; checkboxes and bullets render as glyphs
 - [x] Styles: bold/italic/underline/strike, code and verbatim chips, links, date pills, large
@@ -294,7 +294,7 @@ Deferred: hover cursor/tooltip on links, collapsing drawers (properties panel is
 
 ### Phase 4 task list
 
-- [x] `aster-doc::meta`: set TODO state, priority, tags, SCHEDULED/DEADLINE (keeping time and
+- [x] `org-doc::meta`: set TODO state, priority, tags, SCHEDULED/DEADLINE (keeping time and
       repeaters), timestamp dates; move a subtree anywhere with level shifting (all fuzz-tested)
 - [x] Clickable TODO/priority/tag pills open menus; clicking a date opens a date picker
 - [x] Heading menu (right-click or Cmd/Ctrl+.): state, priority, tags, schedule, deadline, new
@@ -312,7 +312,7 @@ workspace (Phase 5 index), keyboard-driven drag, hover handles/"⋯" buttons, mu
 
 ### Phase 5 task list
 
-- [x] `aster-index`: in-memory index of a folder (titles, FILETAGS, headings, TODO, tags, IDs,
+- [x] `org-index`: in-memory index of a folder (titles, FILETAGS, headings, TODO, tags, IDs,
       conflict copies), full-text search, fuzzy file matching ([0004](decisions/0004-workspace-index.md))
 - [x] Open a folder; sidebar with file tree and tags; last folder/file remembered
 - [x] Generic picker: command palette, Go to file, Search all files, headings by tag
@@ -328,9 +328,9 @@ sidebar, multiple windows, a persistent on-disk index (ADR 0004).
 
 ### Phase 6 task list
 
-- [x] Timestamps with times, repeaters and warning periods (`aster-doc::dates`); index records
+- [x] Timestamps with times, repeaters and warning periods (`org-doc::dates`); index records
       planning dates, plain timestamps, priority and properties per heading
-- [x] `aster-agenda`: day/week agenda (overdue tasks, upcoming deadlines, repeaters), TODO list,
+- [x] `org-agenda`: day/week agenda (overdue tasks, upcoming deadlines, repeaters), TODO list,
       Org match queries with tag inheritance
 - [x] Agenda pane with Day/Week/To-do/Search, Org-style keys, mark done from the agenda
 - [x] Capture: task/note to `inbox.org`, journal entry under today in `journal.org`
@@ -346,22 +346,22 @@ helper), configurable capture templates and targets, clocking/effort sums in the
 ### Phase 7 task list
 
 - [x] Design guidelines: Fluent (early Windows 11) adapted for macOS/Linux ([DESIGN.md](DESIGN.md))
-- [x] `aster-ui`: theme tokens (light/dark), type ramp, radii, elevation, WCAG contrast test
+- [x] `org-ui`: theme tokens (light/dark), type ramp, radii, elevation, WCAG contrast test
 - [x] Shared components: flyout, dialog, list item with selection indicator, text box, selector
       tab, buttons, pills, captions
 - [x] Every view uses tokens (no hard-coded colors); follows the system appearance live;
-      `ASTER_APPEARANCE=light|dark` override
+      `ORG_APPEARANCE=light|dark` override
 - [x] Layout: base layer + rounded content layer; transparent title bar on macOS
 - [x] Fluent UI System Icons (bundled SVG, MIT) with a command bar on every platform
 - [x] System accent color with per-theme contrast-safe shades
 - [x] Settings (appearance, accent, text size, capture templates and targets, keymap) with a
-      settings page; saved as JSON in the platform config dir (`ASTER_SETTINGS_FILE` overrides)
+      settings page; saved as JSON in the platform config dir (`ORG_SETTINGS_FILE` overrides)
 - [x] First run: create or open a notes folder (a new one gets the welcome guide and a starter
       inbox); empty states for "no note open" and "empty folder"
 - [x] Optional Emacs keymap (movement and kill/yank, Org TAB/S-TAB cycling, M-RET/M-arrows,
       `C-c C-t`/`C-c C-w`/`C-c C-x C-a`, `C-x` file commands, `C-c a`/`C-c c`, `M-x`)
 - [x] Create / rename / delete (to the system trash) notes and folders from the sidebar, with a
-      right-click menu; the index tracks folders and folder renames from outside Aster
+      right-click menu; the index tracks folders and folder renames from outside Org
 - [x] Optional Vim keymap: Normal/Insert/Visual(-line) modes, motions, operators (`dd`, `dw`,
       `cw`, `yy`, `p`, …), evil-org-style folding and `>>`/`<<`, `/` find, `:` commands
 - [x] Custom accent color (hex), alongside System and the preset swatches
@@ -372,7 +372,7 @@ helper), configurable capture templates and targets, clocking/effort sums in the
 
 ### Phase 8 task list
 
-Aster stays on 0.x while in early development; the first release is **0.1.0**.
+Org stays on 0.x while in early development; the first release is **0.1.0**.
 
 - [x] Versioning: SemVer from the workspace version, `CHANGELOG.md`, release steps in
       [RELEASING.md](RELEASING.md), version and links in Settings → About

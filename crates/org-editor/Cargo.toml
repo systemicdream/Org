@@ -1,0 +1,15 @@
+[package]
+name = "org-editor"
+description = "GPUI editor view for Org documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+org-doc.workspace = true
+org-syntax.workspace = true
+gpui.workspace = true
+unicode-segmentation.workspace = true
+syntect.workspace = true
+chrono.workspace = true
+org-ui.workspace = true

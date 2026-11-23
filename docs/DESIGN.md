@@ -1,12 +1,12 @@
-# Aster design guidelines
+# Org design guidelines
 
-Aster's interface follows **Microsoft Fluent Design as it looked in early Windows 11** (WinUI 3,
+Org's interface follows **Microsoft Fluent Design as it looked in early Windows 11** (WinUI 3,
 2021–2022): calm layered surfaces, soft rounded geometry, a single accent color, generous
 spacing, and quiet chrome that lets the notes be the focus. We adapt it to macOS and Linux
 rather than imitating Windows pixel for pixel: platform fonts, platform window controls, and
 materials only where the platform supports them.
 
-All values below live in `aster-ui` as theme tokens. **Never hard-code a color, radius, font size
+All values below live in `org-ui` as theme tokens. **Never hard-code a color, radius, font size
 or shadow in a view** — use the token, so light/dark themes and future accent colors just work.
 
 ---
@@ -39,7 +39,7 @@ or shadow in a view** — use the token, so light/dark themes and future accent 
   opaque for reading. Supported on macOS and on Wayland compositors that blur behind windows
   (KDE Plasma, Hyprland); elsewhere (e.g. GNOME) the setting is unavailable and the base is
   solid, since an unblurred see-through window hurts legibility.
-- Flyouts and dialogs are opaque in Aster (true acrylic blur isn't available in-app).
+- Flyouts and dialogs are opaque in Org (true acrylic blur isn't available in-app).
 
 ## 3. Color tokens
 
@@ -57,13 +57,13 @@ Names follow WinUI's theme resources so they're easy to look up.
 
 ### Accent
 
-Aster uses the **system accent color** (macOS System Settings → Appearance → Accent color;
+Org uses the **system accent color** (macOS System Settings → Appearance → Accent color;
 on Linux the desktop's accent via the XDG appearance portal, KDE's `AccentColor`, or GNOME's
 `accent-color`). Like Windows' accent shades, the color is adjusted per theme: darkened on light
 themes and lightened on dark themes until it reaches 4.5:1 contrast on every surface, and text on
 accent fills is black or white, whichever reads better. With no system preference (macOS
 "Multicolor"), the defaults below apply. Settings → Accent color can pick a fixed accent instead
-(a Windows 11-style palette of swatches); `ASTER_ACCENT=#rrggbb` stands in for the system accent
+(a Windows 11-style palette of swatches); `ORG_ACCENT=#rrggbb` stands in for the system accent
 when testing.
 
 | Token | Light | Dark | Use |
@@ -224,7 +224,7 @@ style, 16 px in lists and menus, 20 px in toolbars, colored `text.secondary` (ac
 selected). Icons are bundled as SVG; never use emoji as UI icons.
 
 **App icon** — an eight-point star of warm light on a dark rounded square
-(`assets/branding/aster-icon.png`). On macOS it sits on Apple's icon grid (the square at ~80 % of
+(`assets/branding/org-icon.png`). On macOS it sits on Apple's icon grid (the square at ~80 % of
 the canvas); Linux sizes fill ~94 %. Shown at 96 px on the welcome screen.
 
 ## 9. Motion

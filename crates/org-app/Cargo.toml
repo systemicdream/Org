@@ -1,0 +1,42 @@
+[package]
+name = "org-app"
+description = "Org: a modern Org mode notes app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "org"
+path = "src/main.rs"
+
+[dependencies]
+org-editor.workspace = true
+gpui.workspace = true
+anyhow.workspace = true
+org-index.workspace = true
+org-agenda.workspace = true
+org-doc.workspace = true
+chrono.workspace = true
+notify.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+org-ui.workspace = true
+trash.workspace = true
+ureq.workspace = true
+
+# Flatpak: move files to the trash through the desktop portal (the same ashpd GPUI uses).
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+
+# The Dock icon when Org runs outside an .app bundle (e.g. `cargo run`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSImage",
+    "NSResponder",
+] }

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Regenerate Aster's app icons from assets/branding/aster-icon.png (needs Pillow).
+"""Regenerate Org's app icons from assets/branding/org-icon.png (needs Pillow).
 
 Writes:
   packaging/macos/AppIcon.icns                    (macOS only: uses `iconutil`)
-  crates/aster-app/assets/icon/aster-macos-512.png  (Dock icon when run unbundled)
-  crates/aster-app/assets/icon/aster-256.png        (welcome screen)
+  crates/org-app/assets/icon/org-macos-512.png  (Dock icon when run unbundled)
+  crates/org-app/assets/icon/org-256.png        (welcome screen)
   packaging/linux/icons/hicolor/NxN/apps/<APP_ID>.png
 
 Usage: python3 scripts/make-icons.py
@@ -18,7 +18,7 @@ import tempfile
 
 from PIL import Image
 
-APP_ID = "io.github.systemicdream.Aster"
+APP_ID = "io.github.systemicdream.Org"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -26,7 +26,7 @@ def path(*parts):
     return os.path.join(ROOT, *parts)
 
 
-art = Image.open(path("assets", "branding", "aster-icon.png")).convert("RGBA")
+art = Image.open(path("assets", "branding", "org-icon.png")).convert("RGBA")
 bbox = art.split()[3].point(lambda v: 255 if v > 8 else 0).getbbox()
 art = art.crop(bbox)
 
@@ -44,9 +44,9 @@ def place(canvas, fill):
 
 # macOS: Apple's icon grid puts the rounded square in ~824 of 1024 px.
 mac = place(1024, 824 / 1024)
-os.makedirs(path("crates", "aster-app", "assets", "icon"), exist_ok=True)
+os.makedirs(path("crates", "org-app", "assets", "icon"), exist_ok=True)
 mac.resize((512, 512), Image.LANCZOS).save(
-    path("crates", "aster-app", "assets", "icon", "aster-macos-512.png"), optimize=True
+    path("crates", "org-app", "assets", "icon", "org-macos-512.png"), optimize=True
 )
 if shutil.which("iconutil"):
     with tempfile.TemporaryDirectory() as tmp:
@@ -69,5 +69,5 @@ for size in (16, 24, 32, 48, 64, 128, 256, 512):
     d = path("packaging", "linux", "icons", "hicolor", f"{size}x{size}", "apps")
     os.makedirs(d, exist_ok=True)
     place(size, 0.94 if size >= 48 else 1.0).save(os.path.join(d, f"{APP_ID}.png"), optimize=True)
-place(256, 0.94).save(path("crates", "aster-app", "assets", "icon", "aster-256.png"), optimize=True)
+place(256, 0.94).save(path("crates", "org-app", "assets", "icon", "org-256.png"), optimize=True)
 print("icons written")

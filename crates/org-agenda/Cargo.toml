@@ -1,0 +1,10 @@
+[package]
+name = "org-agenda"
+description = "Agenda views over the Org workspace index: day/week, TODO list, tag/property matches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+org-index.workspace = true
+chrono.workspace = true

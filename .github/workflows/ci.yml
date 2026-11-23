@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        # libxkbcommon-x11-dev is needed even though Aster is Wayland-only: gpui 0.2.2 always
+        # libxkbcommon-x11-dev is needed even though Org is Wayland-only: gpui 0.2.2 always
         # enables xkbcommon's `x11` feature, so it is required at link time.
         run: |
           sudo apt-get update

@@ -8,16 +8,16 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-aster-org = { path = "crates/aster-org" }
-aster-doc = { path = "crates/aster-doc" }
-aster-editor = { path = "crates/aster-editor" }
-aster-index = { path = "crates/aster-index" }
-aster-agenda = { path = "crates/aster-agenda" }
-aster-ui = { path = "crates/aster-ui" }
+org-syntax = { path = "crates/org-syntax" }
+org-doc = { path = "crates/org-doc" }
+org-editor = { path = "crates/org-editor" }
+org-index = { path = "crates/org-index" }
+org-agenda = { path = "crates/org-agenda" }
+org-ui = { path = "crates/org-ui" }
 
 # GPUI moves fast; pin exactly and upgrade deliberately.
 # Features:
-# - default features off: drops the X11 backend. On Linux, Aster targets Wayland only.
+# - default features off: drops the X11 backend. On Linux, Org targets Wayland only.
 # - `font-kit`: font loading (macOS and Linux). `wayland`: the Linux backend.
 # - `runtime_shaders`: compile Metal shaders at launch instead of needing the Metal toolchain
 #   (`xcodebuild -downloadComponent MetalToolchain`) at build time. Revisit for release builds.

@@ -1,9 +1,0 @@
-[package]
-name = "aster-ui"
-description = "Aster's Fluent-inspired theme tokens and shared UI building blocks (see docs/DESIGN.md)"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-gpui.workspace = true
