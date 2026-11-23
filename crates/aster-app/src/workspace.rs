@@ -73,11 +73,18 @@ pub struct Workspace {
     toast: Option<(SharedString, bool)>,
     toast_task: Option<Task<()>>,
     pub(crate) tree_menu: Option<TreeMenu>,
+    /// The open file's text as Aster last read or wrote it. The watcher reports Aster's own
+    /// saves too, sometimes after newer edits; matching this, they're not outside changes.
+    last_saved: Option<String>,
+    /// The notebook switcher's open menu: the recent notebooks it lists.
+    pub(crate) notebook_menu: Option<Vec<crate::session::RecentNotebook>>,
     pub(crate) name_dialog: Option<(Entity<NameDialog>, Subscription)>,
     /// The welcome sample is showing (unsaved, not a file).
     sample: bool,
     /// Focus for the window itself, so shortcuts work when no note is open.
     focus_handle: gpui::FocusHandle,
+    /// Update and crash notices; the first shows at the top of the content.
+    pub(crate) notices: Vec<crate::notices::Notice>,
 }
 
 impl Workspace {
@@ -88,8 +95,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let last_saved = path.is_some().then(|| text.clone());
         let (editor, sub) = Self::make_editor(text, window, cx);
         let mut ws = Self {
+            last_saved,
             editor,
             path,
             dirty: false,
@@ -113,9 +122,11 @@ impl Workspace {
             toast: None,
             toast_task: None,
             tree_menu: None,
+            notebook_menu: None,
             name_dialog: None,
             sample: false,
             focus_handle: cx.focus_handle(),
+            notices: Vec::new(),
         };
         window.set_window_title(&ws.title());
         // Follow the system's light/dark setting.
@@ -176,26 +187,23 @@ impl Workspace {
         (editor, sub)
     }
 
+    /// The window title: just the open note's name.
     pub(crate) fn title(&self) -> String {
-        let name = match (&self.path, self.sample) {
-            (Some(p), _) => p.file_name().map(|n| n.to_string_lossy().into_owned()),
-            (None, true) => Some("Welcome (sample)".into()),
-            (None, false) => None,
+        let in_root = |p: &Path| {
+            self.root
+                .as_deref()
+                .and_then(|r| p.strip_prefix(r).ok())
+                .and_then(Path::to_str)
+                .is_some_and(crate::sidebar::is_inbox)
         };
-        let folder = self
-            .root
-            .as_deref()
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().into_owned());
-        let parts: Vec<String> = name.into_iter().chain(folder).collect();
-        if parts.is_empty() {
-            return "Aster".into();
+        match (&self.path, self.sample) {
+            (Some(p), _) if in_root(p) => "Inbox".into(),
+            (Some(p), _) => p
+                .file_stem()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+            (None, true) => "Welcome".into(),
+            (None, false) => "Aster".into(),
         }
-        format!(
-            "{}{} — Aster",
-            if self.dirty { "● " } else { "" },
-            parts.join(" — ")
-        )
     }
 
     /// Drop a pending autosave (the edits stay in the editor, marked unsaved).
@@ -227,6 +235,7 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = None;
+        self.last_saved = None;
         self.sample = false;
         self.sync_base_dir(cx);
         window.set_window_title(&self.title());
@@ -244,6 +253,7 @@ impl Workspace {
         self.editor = editor;
         self._editor_subscription = sub;
         self.path = None;
+        self.last_saved = None;
         self.sample = true;
         self.dirty = false;
         self.view = MainView::Editor;
@@ -254,11 +264,9 @@ impl Workspace {
     }
 
     pub(crate) fn save_session(&self) {
-        Session {
-            root: self.root.clone(),
-            file: self.path.clone(),
-        }
-        .save();
+        let mut session = Session::load();
+        session.remember(self.root.clone(), self.path.clone());
+        session.save();
     }
 
     // ---- messages -------------------------------------------------------------------------
@@ -421,6 +429,7 @@ impl Workspace {
                     |this, _, event: &SettingsEvent, window, cx| match event {
                         SettingsEvent::Close => this.show_editor(window, cx),
                         SettingsEvent::Error(msg) => this.toast(msg.clone(), true, cx),
+                        SettingsEvent::CheckForUpdates => this.check_for_updates(true, cx),
                     },
                 );
                 self.settings = Some((view.clone(), sub));
@@ -493,11 +502,11 @@ impl Workspace {
             &dialog,
             window,
             |this, _, event: &CaptureEvent, window, cx| match event {
-                CaptureEvent::Capture(template, text) => {
-                    let (template, text) = (template.clone(), text.clone());
+                CaptureEvent::Capture(template, text, date) => {
+                    let (template, text, date) = (template.clone(), text.clone(), *date);
                     this.capture = None;
                     this.focus_main(window, cx);
-                    this.save_capture(template, &text, cx);
+                    this.save_capture(template, &text, date, cx);
                 }
                 CaptureEvent::Dismissed => {
                     this.capture = None;
@@ -510,7 +519,13 @@ impl Workspace {
         cx.notify();
     }
 
-    fn save_capture(&mut self, template: CaptureTemplate, text: &str, cx: &mut Context<Self>) {
+    fn save_capture(
+        &mut self,
+        template: CaptureTemplate,
+        text: &str,
+        date: Option<crate::capture::CaptureDate>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(root) = self.root.clone() else {
             return;
         };
@@ -528,7 +543,7 @@ impl Workspace {
         let at = CaptureTime::now();
         let result = self.edit_file(
             &root.join(&rel),
-            |doc| capture_op(doc, &template, text, &at),
+            |doc| capture_op(doc, &template, text, date, &at),
             cx,
         );
         match result {
@@ -765,6 +780,7 @@ impl Workspace {
         let text = self.editor.read(cx).text().to_owned();
         match write_atomic(&path, &text) {
             Ok(()) => {
+                self.last_saved = Some(text.clone());
                 self.dirty = false;
                 window.set_window_title(&self.title());
                 self.index.update(cx, |index, cx| {
@@ -866,7 +882,7 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            this.update_in(cx, |ws, window, cx| ws.set_root(path, window, cx))
+            this.update_in(cx, |ws, window, cx| ws.switch_notebook(path, window, cx))
                 .ok();
         })
         .detach();
@@ -897,6 +913,7 @@ impl Workspace {
             self.save_now(window, cx);
         }
         self.close_find_bar(window, cx);
+        self.last_saved = Some(text.clone());
         let (editor, sub) = Self::make_editor(text, window, cx);
         self.editor = editor;
         self._editor_subscription = sub;
@@ -1019,6 +1036,14 @@ impl Workspace {
     /// Use `root` as the notes folder: scan it in the background and watch it for changes.
     pub(crate) fn set_root(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let root = std::fs::canonicalize(&root).unwrap_or(root);
+        if self.root.as_ref().is_some_and(|r| *r != root) {
+            // Another notebook: don't show the previous one's files while scanning.
+            self.index.update(cx, |i, cx| {
+                *i = Index::default();
+                cx.notify();
+            });
+            self.expanded.clear();
+        }
         self.root = Some(root.clone());
         self.scanning = true;
         self.sidebar_open = true;
@@ -1117,11 +1142,12 @@ impl Workspace {
         let Ok(disk) = read_org(&current) else {
             return; // deleted or unreadable: keep what's in the editor
         };
-        if disk == self.editor.read(cx).text() {
+        if disk == self.editor.read(cx).text() || self.last_saved.as_ref() == Some(&disk) {
             return; // our own save, or no real change
         }
         if !self.dirty {
             self.editor.update(cx, |e, cx| e.reload_text(&disk, cx));
+            self.last_saved = Some(disk);
             self.dirty = false;
             self.autosave = None;
             window.set_window_title(&self.title());
@@ -1145,6 +1171,7 @@ impl Workspace {
                 if choice == 1 {
                     if let Ok(disk) = read_org(&current) {
                         ws.editor.update(cx, |e, cx| e.reload_text(&disk, cx));
+                        ws.last_saved = Some(disk);
                     }
                     ws.dirty = false;
                     ws.autosave = None;
@@ -1501,10 +1528,14 @@ const TITLE_BAR_HEIGHT: f32 = 38.;
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors;
-        let sidebar = if self.sidebar_open && self.root.is_some() {
-            Some(self.render_sidebar(cx).into_any_element())
-        } else {
-            None
+        // Without a folder (the sample, or nothing open) the sidebar explains how to get one;
+        // not on the welcome screen, which already does.
+        let sidebar = match (self.sidebar_open, &self.root) {
+            (true, Some(_)) => Some(self.render_sidebar(cx).into_any_element()),
+            (true, None) if self.has_document() => {
+                Some(self.render_folderless_sidebar(cx).into_any_element())
+            }
+            _ => None,
         };
         let has_sidebar = sidebar.is_some();
         // The command bar (docs/DESIGN.md §11). On macOS it's the transparent title bar (traffic
@@ -1660,6 +1691,7 @@ impl Render for Workspace {
                             .when(has_sidebar, |d| {
                                 d.border_l_1().rounded_tl(aster_ui::RADIUS_OVERLAY)
                             })
+                            .children(self.render_notice(cx))
                             .children(
                                 self.find_bar
                                     .clone()
@@ -1717,6 +1749,7 @@ impl Render for Workspace {
                 .with_priority(2)
             }))
             .children(self.render_tree_menu(cx))
+            .children(self.render_notebook_menu(TITLE_BAR_HEIGHT + 32., cx))
             .children(self.toast.clone().map(|(msg, error)| {
                 // InfoBar-style toast (docs/DESIGN.md §7).
                 let theme = cx.theme();

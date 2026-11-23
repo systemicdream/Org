@@ -21,6 +21,8 @@ mkdir -p "$DATA_DIR/applications"
 sed "s|^Exec=aster |Exec=$BIN_DIR/aster |" "$ROOT/packaging/linux/$APP_ID.desktop" \
     > "$DATA_DIR/applications/$APP_ID.desktop"
 
+install -Dm644 "$ROOT/packaging/linux/$APP_ID.metainfo.xml" "$DATA_DIR/metainfo/$APP_ID.metainfo.xml"
+
 for icon in "$ROOT"/packaging/linux/icons/hicolor/*/apps/"$APP_ID".png; do
     size_dir="$(basename "$(dirname "$(dirname "$icon")")")"
     install -Dm644 "$icon" "$DATA_DIR/icons/hicolor/$size_dir/apps/$APP_ID.png"

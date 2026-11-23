@@ -11,13 +11,17 @@ mod file_actions;
 mod files;
 mod keymap;
 mod name_dialog;
+mod notebooks;
+mod notices;
 mod picker;
+mod release;
 mod session;
 mod settings;
 mod settings_view;
 mod sidebar;
 mod watch;
 mod welcome;
+mod window_blur;
 mod workspace;
 
 use std::path::PathBuf;
@@ -99,6 +103,18 @@ pub(crate) fn menus() -> Vec<Menu> {
             ],
         },
         Menu {
+            name: "Format".into(),
+            items: vec![
+                MenuItem::action("Bold", e::Bold),
+                MenuItem::action("Italic", e::Italic),
+                MenuItem::action("Underline", e::Underline),
+                MenuItem::action("Strikethrough", e::Strikethrough),
+                MenuItem::action("Code", e::InlineCode),
+                MenuItem::separator(),
+                MenuItem::action("Link", e::InsertLink),
+            ],
+        },
+        Menu {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Command Palette…", ShowCommandPalette),
@@ -162,6 +178,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    release::install_panic_hook();
     let (file, root) = startup_target();
     let text = match &file {
         Some(p) if p.exists() => read_org(p)?,
@@ -202,9 +219,11 @@ fn main() -> anyhow::Result<()> {
             window
                 .update(cx, |ws, window, cx| {
                     ws.focus_main(window, cx);
+                    ws.startup_notices(cx);
                     cx.activate(true);
                 })
                 .ok();
+            window_blur::sync(window_background == gpui::WindowBackgroundAppearance::Blurred);
         });
     Ok(())
 }

@@ -13,10 +13,28 @@ pub struct SpanStyle {
     pub color: Option<Hsla>,
     pub background: Option<Hsla>,
     pub bold: bool,
+    /// Semibold (headings); `bold` wins when both apply.
+    pub semibold: bool,
     pub italic: bool,
     pub underline: bool,
     pub strike: bool,
     pub mono: bool,
+    /// Laid out but not drawn: something else is painted in its place (table rules,
+    /// checkboxes).
+    pub invisible: bool,
+    /// Painted by the editor element rather than as text style (see [`Decor`]).
+    pub decor: Option<Decor>,
+}
+
+/// Shapes the editor element paints around or in place of a span's text.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Decor {
+    /// A rounded label behind the text, in this color (TODO keywords, priorities, dates).
+    Pill(Hsla),
+    /// A checkbox drawn over the (invisible) checkbox glyph.
+    Checkbox { checked: bool, partial: bool },
+    /// An icon drawn in the space at the start of the span (a pill's leading em space).
+    Icon(aster_ui::icons::Icon),
 }
 
 impl SpanStyle {
@@ -27,6 +45,9 @@ impl SpanStyle {
         }
         if let Some(bg) = self.background {
             run.background_color = Some(bg);
+        }
+        if self.semibold && run.font.weight < FontWeight::SEMIBOLD {
+            run.font.weight = FontWeight::SEMIBOLD;
         }
         if self.bold {
             run.font.weight = FontWeight::BOLD;
@@ -50,6 +71,12 @@ impl SpanStyle {
                 thickness: px(1.),
             });
         }
+        if self.invisible {
+            run.color = gpui::transparent_black();
+            run.background_color = None;
+            run.underline = None;
+            run.strikethrough = None;
+        }
     }
 }
 
@@ -71,7 +98,7 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str, colors: &Colors) -> Spa
             } else {
                 colors.text_primary
             }),
-            bold: true,
+            semibold: true,
             ..Default::default()
         };
         spans.push((h.range.start..line_end, heading));
@@ -92,7 +119,7 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str, colors: &Colors) -> Spa
         if let Some(todo) = &h.todo
             && text[keyword_start..line_end].starts_with(todo.as_str())
         {
-            // Pills hint that these are clickable.
+            // Labels hint that these are clickable.
             let (c, bg) = if h.done {
                 (colors.success, colors.success_bg)
             } else {
@@ -102,12 +129,12 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str, colors: &Colors) -> Spa
                 keyword_start..keyword_start + todo.len(),
                 SpanStyle {
                     color: Some(c),
-                    background: Some(bg),
-                    bold: true,
-                    ..Default::default()
+                    decor: Some(Decor::Pill(bg)),
+                    ..heading
                 },
             ));
         }
+        let mut title_start = h.title_start.min(line_end);
         if let Some(p) = &h.priority
             && let Some(i) = line.find(&format!("[#{p}]"))
         {
@@ -116,18 +143,20 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str, colors: &Colors) -> Spa
                 start..start + p.len() + 3,
                 SpanStyle {
                     color: Some(colors.caution),
-                    background: Some(colors.caution_bg),
-                    bold: true,
-                    ..Default::default()
+                    decor: Some(Decor::Pill(colors.caution_bg)),
+                    ..heading
                 },
             ));
+            title_start = title_start.max(start + p.len() + 3);
         }
+        let mut title_end = h.range.start + line.trim_end().len();
         if !h.tags.is_empty() {
             let trimmed = line.trim_end();
             if trimmed.ends_with(':')
                 && let Some(i) = trimmed.rfind(char::is_whitespace)
             {
                 let start = h.range.start + i + 1;
+                // Shown only while editing the heading line; otherwise drawn as labels.
                 spans.push((
                     start..h.range.start + trimmed.len(),
                     SpanStyle {
@@ -136,7 +165,20 @@ pub fn style_spans(headings: &[HeadingInfo], text: &str, colors: &Colors) -> Spa
                         ..Default::default()
                     },
                 ));
+                title_end = h.range.start + line[..i].trim_end().len();
             }
+        }
+        // Finished headings are struck through (the title, not the keyword or tags).
+        let title_start = title_start + text[title_start..line_end].len()
+            - text[title_start..line_end].trim_start().len();
+        if h.done && title_start < title_end {
+            spans.push((
+                title_start..title_end,
+                SpanStyle {
+                    strike: true,
+                    ..heading
+                },
+            ));
         }
     }
     spans

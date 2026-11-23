@@ -81,6 +81,14 @@ pub fn rename(path: &Path, name: &str) -> anyhow::Result<PathBuf> {
 
 /// Move a file or folder to the system trash.
 pub fn delete(path: &Path) -> anyhow::Result<()> {
+    // In a Flatpak the trash folder Aster sees is its own sandboxed one; ask the desktop's
+    // trash portal instead, so it lands in the user's real trash.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        let file = std::fs::File::open(path)?;
+        return futures::executor::block_on(ashpd::desktop::trash::trash_file(&file))
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
     trash::delete(path).map_err(|e| anyhow::anyhow!("{e}"))
 }
 

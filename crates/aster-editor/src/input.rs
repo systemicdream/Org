@@ -135,6 +135,7 @@ impl EntityInputHandler for OrgEditor {
             }
             range.start + utf8
         };
+        self.cursor_placed = true;
         self.selected_range = new_selected_range_utf16
             .map(|sel| to_utf8(sel.start)..to_utf8(sel.end))
             .unwrap_or_else(|| {

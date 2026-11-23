@@ -8,8 +8,10 @@
 //! - search highlighting and replace, driven by [`FindBar`]
 //! - a single-line mode, used for the find bar's inputs
 
+pub mod calendar;
 mod element;
 mod find_bar;
+mod format_bar;
 mod highlight;
 mod input;
 mod popup;
@@ -24,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aster_doc::display::RowDisplay;
+use aster_doc::emphasis::Emphasis;
 use aster_doc::folds::Folds;
 use aster_doc::{Document, EditOrigin, Selection, ops, search, text};
 use aster_org::{DecoKind, Decoration};
@@ -105,6 +108,14 @@ actions!(
         OrgCycle,
         /// Org's Shift+TAB: fold or unfold every heading (in a table, the previous cell).
         OrgGlobalCycle,
+        // Formatting (the selection, or the word at the cursor)
+        Bold,
+        Italic,
+        Underline,
+        Strikethrough,
+        InlineCode,
+        /// Make the selection a link's text.
+        InsertLink,
     ]
 );
 
@@ -115,6 +126,13 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 pub fn bind_keys(cx: &mut App) {
     let ctx = Some(KEY_CONTEXT);
     let mut bindings = vec![
+        KeyBinding::new("secondary-b", Bold, ctx),
+        KeyBinding::new("secondary-i", Italic, ctx),
+        KeyBinding::new("secondary-u", Underline, ctx),
+        KeyBinding::new("secondary-shift-x", Strikethrough, ctx),
+        KeyBinding::new("secondary-e", InlineCode, ctx),
+        // Not Cmd/Ctrl+K alone: it starts the fold chords below.
+        KeyBinding::new("secondary-shift-k", InsertLink, ctx),
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
         KeyBinding::new("left", Left, ctx),
@@ -330,6 +348,8 @@ struct Layout {
     bounds: Bounds<Pixels>,
     text_left: Pixels,
     rows: Vec<RowLayout>,
+    /// Where each heading's tag labels were drawn, with the heading's start offset.
+    tag_hits: Vec<(Bounds<Pixels>, usize)>,
 }
 
 struct RowLayout {
@@ -346,6 +366,29 @@ struct RowLayout {
     /// Shaped only for rows near the viewport; others are shaped on demand.
     wrapped: Option<WrappedLine>,
     visual_lines: usize,
+    /// Shapes painted around the text (labels, checkboxes, icons), in display coordinates.
+    decor: Vec<(Range<usize>, spans::SpanStyle)>,
+    /// A heading's tags, drawn as labels after its text (unless the line is being edited).
+    tags: Vec<String>,
+}
+
+/// A row shaped for painting.
+struct ShapedRow {
+    wrapped: WrappedLine,
+    display: RowDisplay,
+    decor: Vec<(Range<usize>, spans::SpanStyle)>,
+    tags: Vec<String>,
+}
+
+/// A date shown in friendly form ("Due Fri, Nov 27") while its line isn't being edited.
+struct DateLabel {
+    /// The timestamp's buffer range.
+    range: Range<usize>,
+    /// A planning keyword (and the spaces after it) folded into the label.
+    keyword: Option<Range<usize>>,
+    text: String,
+    color: Hsla,
+    background: Hsla,
 }
 
 impl RowLayout {
@@ -401,6 +444,10 @@ pub struct OrgEditor {
     visible_rows: Vec<usize>,
     selected_range: Range<usize>,
     selection_reversed: bool,
+    /// Whether the cursor has been placed since the text was loaded. Until then no markup is
+    /// revealed around it, so a file opens fully formatted rather than with its first line
+    /// shown as typed.
+    cursor_placed: bool,
     marked_range: Option<Range<usize>>,
     /// Preferred x position for vertical movement.
     goal_x: Option<Pixels>,
@@ -423,7 +470,7 @@ pub struct OrgEditor {
     popup: Option<Popup>,
     vim: vim::VimState,
     /// Where the last popup was shown, so follow-up popups appear in the same place.
-    last_popup_anchor: Point<Pixels>,
+    last_popup_anchor: popup::PopupAnchor,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -490,6 +537,7 @@ impl OrgEditor {
             hidden: Vec::new(),
             visible_rows: Vec::new(),
             selected_range: 0..0,
+            cursor_placed: false,
             selection_reversed: false,
             marked_range: None,
             goal_x: None,
@@ -506,7 +554,7 @@ impl OrgEditor {
             known_tags: Vec::new(),
             popup: None,
             vim: vim::VimState::default(),
-            last_popup_anchor: Point::default(),
+            last_popup_anchor: popup::PopupAnchor::default(),
             _subscriptions: subscriptions,
         };
         if mode == EditorMode::Full && startup_folded(this.doc.text()) {
@@ -571,6 +619,7 @@ impl OrgEditor {
         self.doc = Document::new(text);
         self.folds = Folds::default();
         self.set_selection(Selection::cursor(text.len()));
+        self.cursor_placed = false;
         self.after_change(cx);
     }
 
@@ -763,8 +812,8 @@ impl OrgEditor {
             .extend(text.match_indices('\n').map(|(i, _)| i + 1));
         let kinds = if self.mode == EditorMode::Full {
             preview::row_kinds(
+                text,
                 &self.line_starts,
-                text.len(),
                 self.doc.headings(),
                 self.doc.decorations(),
             )
@@ -951,7 +1000,51 @@ impl OrgEditor {
 
     /// Text size multiplier for a row (headings and titles are larger).
     fn row_scale(&self, row: usize) -> f32 {
-        self.row_meta.get(row).map_or(1.0, |m| m.kind.scale())
+        match self.row_meta.get(row).map(|m| &m.kind) {
+            // A drawn rule needs only a sliver of a line.
+            Some(RowKind::TableRule) if !self.table_revealed(row) => 0.45,
+            Some(kind) => kind.scale(),
+            None => 1.0,
+        }
+    }
+
+    /// Space above the `i`th visible row (see [`RowKind::space_above`]).
+    fn space_above(&self, i: usize, line_height: Pixels) -> Pixels {
+        if self.mode != EditorMode::Full || i == 0 {
+            return px(0.);
+        }
+        let (row, previous) = (self.visible_rows[i], self.visible_rows[i - 1]);
+        let blank = self.doc.text()[self.line_range(previous)].trim().is_empty();
+        line_height
+            * self
+                .row_kind(row)
+                .space_above(&self.row_kind(previous), blank)
+    }
+
+    /// Whether the table containing `row` is being edited, so it shows as plain text.
+    fn table_revealed(&self, row: usize) -> bool {
+        if !self.cursor_placed {
+            return false;
+        }
+        let start = self.line_starts[row];
+        let head = self.cursor_offset();
+        let decos = self.doc.decorations();
+        let i = decos.partition_point(|d| d.range.start <= start);
+        decos[..i]
+            .iter()
+            .rev()
+            .find(|d| d.kind == DecoKind::Table && d.range.contains(&start))
+            .is_some_and(|d| d.range.start <= head && head <= d.range.end)
+    }
+
+    /// Whether the cursor is on line `row` (so its markup shows as typed).
+    fn cursor_on_row(&self, row: usize) -> bool {
+        if !self.cursor_placed {
+            return false;
+        }
+        let range = self.line_range(row);
+        let head = self.cursor_offset();
+        range.start <= head && head <= range.end
     }
 
     fn row_kind(&self, row: usize) -> RowKind {
@@ -988,6 +1081,9 @@ impl OrgEditor {
 
     /// Whether the cursor is editing `d`, so its raw markup should show.
     fn revealed(&self, d: &Decoration) -> bool {
+        if !self.cursor_placed {
+            return false;
+        }
         let head = self.cursor_offset();
         let sel = &self.selected_range;
         let on_line = || {
@@ -1022,7 +1118,146 @@ impl OrgEditor {
             return RowDisplay::replaced_line(range, &label);
         }
         let decos = self.inline_decorations(&range);
-        RowDisplay::build(self.doc.text(), range, decos, |d| self.revealed(d))
+        let mut extra: Vec<(Range<usize>, Option<String>)> = Vec::new();
+        for date in self.date_labels(row) {
+            if let Some(keyword) = date.keyword {
+                extra.push((keyword, None));
+            }
+            extra.push((date.range, Some(date.text)));
+        }
+        if let Some(tags) = self.hidden_tags(row) {
+            extra.push((tags, None));
+        }
+        extra.extend(
+            self.label_gaps(row)
+                .into_iter()
+                .map(|r| (r, Some("\u{2002}".into()))),
+        );
+        RowDisplay::build_with(self.doc.text(), range, decos, |d| self.revealed(d), extra)
+    }
+
+    /// The spaces after a heading's TODO keyword and priority, widened in the display so their
+    /// labels don't touch (while the line isn't being edited).
+    fn label_gaps(&self, row: usize) -> Vec<Range<usize>> {
+        let Some(h) = self.heading_on_row(row) else {
+            return Vec::new();
+        };
+        if self.cursor_on_row(row) {
+            return Vec::new();
+        }
+        let text = self.doc.text();
+        let space_after = |end: usize| {
+            let n = text[end..h.line_end].len() - text[end..h.line_end].trim_start().len();
+            (n > 0 && end + n < h.line_end).then(|| end..end + n)
+        };
+        let mut gaps = Vec::new();
+        if let Some(todo) = &h.todo_range {
+            gaps.extend(space_after(todo.end));
+        }
+        if let Some(p) = aster_doc::meta::priority_range(&self.doc, h) {
+            let end = text[..p.end].trim_end().len();
+            gaps.extend(space_after(end));
+        }
+        gaps
+    }
+
+    /// The heading on `row`, if it is one.
+    fn heading_on_row(&self, row: usize) -> Option<&aster_org::HeadingInfo> {
+        let start = self.line_starts[row];
+        let hs = self.doc.headings();
+        hs.get(hs.partition_point(|h| h.range.start < start))
+            .filter(|h| h.range.start == start)
+    }
+
+    /// The buffer range of a heading's tags (with the spaces before them) while they're drawn
+    /// as labels: always, except while the cursor is on the heading line.
+    fn hidden_tags(&self, row: usize) -> Option<Range<usize>> {
+        let h = self.heading_on_row(row)?;
+        if self.cursor_on_row(row) {
+            return None;
+        }
+        let tags = aster_doc::meta::tags_range(&self.doc, h)?;
+        let text = self.doc.text();
+        let start = text[..tags.start]
+            .trim_end()
+            .len()
+            .max(h.range.start + h.level);
+        Some(start..h.line_end)
+    }
+
+    /// The tags drawn as labels after the heading on `row`.
+    fn row_tags(&self, row: usize) -> Vec<String> {
+        match self.heading_on_row(row) {
+            Some(h) if self.hidden_tags(row).is_some() => h.tags.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Dates on `row` shown in friendly form: those not being edited. On a planning line
+    /// (`DEADLINE: <…>`) the keyword joins the label ("Due Fri, Nov 27") and the whole line
+    /// shows as typed while the cursor is on it.
+    fn date_labels(&self, row: usize) -> Vec<DateLabel> {
+        if self.mode != EditorMode::Full {
+            return Vec::new();
+        }
+        let range = self.line_range(row);
+        let planning = self.row_kind(row) == RowKind::Planning;
+        if planning && self.cursor_on_row(row) {
+            return Vec::new();
+        }
+        let text = self.doc.text();
+        let today = aster_doc::dates::today();
+        // A planning line belongs to the heading just above it.
+        let done = planning && {
+            let hs = self.doc.headings();
+            let i = hs.partition_point(|h| h.range.start < range.start);
+            i > 0 && hs[i - 1].done
+        };
+        let c = &self.colors;
+        self.inline_decorations(&range)
+            .iter()
+            .filter(|d| d.kind == DecoKind::Timestamp && d.range.end <= range.end)
+            .filter(|d| planning || !self.revealed(d))
+            .filter_map(|d| {
+                let ts = aster_doc::dates::Timestamp::parse(&text[d.range.clone()])?;
+                let before = text[range.start..d.range.start].trim_end();
+                let keyword = ["DEADLINE:", "SCHEDULED:", "CLOSED:"]
+                    .into_iter()
+                    .find(|k| planning && before.ends_with(k));
+                let neutral = (c.text_secondary, c.neutral_bg);
+                let (label, (color, background)) = match keyword {
+                    Some("DEADLINE:") if !done && ts.date < today => {
+                        (Some("Due"), (c.critical, c.critical_bg))
+                    }
+                    Some("DEADLINE:") if !done && ts.date == today => {
+                        (Some("Due"), (c.accent, c.accent_subtle))
+                    }
+                    Some("DEADLINE:") => (Some("Due"), neutral),
+                    Some("SCHEDULED:") if !done && ts.date <= today => {
+                        (Some("Scheduled"), (c.accent, c.accent_subtle))
+                    }
+                    Some("SCHEDULED:") => (Some("Scheduled"), neutral),
+                    Some(_) => (Some("Done"), (c.text_tertiary, c.neutral_bg)),
+                    None if ts.active => (None, (c.accent, c.accent_subtle)),
+                    None => (None, neutral),
+                };
+                let keyword = keyword.map(|k| {
+                    let start = range.start + before.len() - k.len();
+                    start..d.range.start
+                });
+                Some(DateLabel {
+                    range: d.range.clone(),
+                    keyword,
+                    // An em space leaves room for the calendar icon.
+                    text: format!(
+                        "\u{2003}\u{2009}{}",
+                        preview::friendly_date(&ts, label, today)
+                    ),
+                    color,
+                    background,
+                })
+            })
+            .collect()
     }
 
     /// Drawers as (whole range, body range), cached per change.
@@ -1118,9 +1353,87 @@ impl OrgEditor {
                 .map(|(r, st)| (to_disp(r), *st)),
         );
         if self.mode == EditorMode::Full {
+            let dates = self.date_labels(row);
             for d in self.inline_decorations(&range) {
                 if let Some(st) = preview::inline_style(&d.kind, &self.colors) {
                     out.push((to_disp(&d.range), st));
+                }
+                match d.kind {
+                    // A date being edited shows as typed.
+                    DecoKind::Timestamp if !dates.iter().any(|l| l.range == d.range) => out.push((
+                        to_disp(&d.range),
+                        spans::SpanStyle {
+                            color: Some(self.colors.accent),
+                            background: Some(self.colors.accent_subtle),
+                            ..Default::default()
+                        },
+                    )),
+                    // A ticked item's text fades and is struck through.
+                    DecoKind::Checkbox { checked: true, .. } => {
+                        let rest = &self.doc.text()[d.range.end.min(range.end)..range.end];
+                        let start = range.end - rest.trim_start().len();
+                        if start < range.end {
+                            out.push((
+                                to_disp(&(start..range.end)),
+                                spans::SpanStyle {
+                                    color: Some(self.colors.text_tertiary),
+                                    strike: true,
+                                    ..Default::default()
+                                },
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for date in dates {
+                let r = to_disp(&date.range);
+                out.push((
+                    r.clone(),
+                    spans::SpanStyle {
+                        color: Some(date.color),
+                        background: None,
+                        decor: Some(spans::Decor::Pill(date.background)),
+                        ..Default::default()
+                    },
+                ));
+                let icon = r.start..r.start + "\u{2003}".len();
+                out.push((
+                    icon,
+                    spans::SpanStyle {
+                        color: Some(date.color),
+                        decor: Some(spans::Decor::Icon(aster_ui::icons::Icon::CalendarToday)),
+                        ..Default::default()
+                    },
+                ));
+            }
+            // Tables not being edited: grid lines replace the `|` and `-+-` characters.
+            let kind = self.row_kind(row);
+            if kind.is_table() && !self.table_revealed(row) {
+                let invisible = spans::SpanStyle {
+                    invisible: true,
+                    ..Default::default()
+                };
+                match kind {
+                    RowKind::TableRule => out.push((0..display.text.len(), invisible)),
+                    RowKind::Table { header } => {
+                        if header {
+                            out.push((
+                                0..display.text.len(),
+                                spans::SpanStyle {
+                                    semibold: true,
+                                    ..Default::default()
+                                },
+                            ));
+                        }
+                        out.extend(
+                            display
+                                .text
+                                .match_indices('|')
+                                .map(|(i, _)| (i..i + 1, invisible)),
+                        );
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1158,12 +1471,7 @@ impl OrgEditor {
     }
 
     /// Lay out one row: its display text, styled and wrapped.
-    fn shape_row(
-        &self,
-        row: usize,
-        metrics: &Metrics,
-        window: &mut Window,
-    ) -> (WrappedLine, RowDisplay) {
+    fn shape_row(&self, row: usize, metrics: &Metrics, window: &mut Window) -> ShapedRow {
         let display = self.row_display(row);
         let styles = self.row_styles(row, &display);
         let kind = self.row_kind(row);
@@ -1194,7 +1502,16 @@ impl OrgEditor {
             .ok()
             .and_then(|mut lines| lines.pop())
             .unwrap_or_default();
-        (wrapped, display)
+        let decor = styles
+            .into_iter()
+            .filter(|(r, st)| st.decor.is_some() && !r.is_empty())
+            .collect();
+        ShapedRow {
+            wrapped,
+            display,
+            decor,
+            tags: self.row_tags(row),
+        }
     }
 
     /// Make sure layout row `i` is shaped (rows far from the viewport are shaped lazily).
@@ -1205,10 +1522,13 @@ impl OrgEditor {
         if layout.rows[i].wrapped.is_some() {
             return;
         }
-        let (wrapped, display) = self.shape_row(layout.rows[i].row, &metrics, window);
+        let shaped = self.shape_row(layout.rows[i].row, &metrics, window);
         if let Some(layout) = self.layout.as_mut() {
-            layout.rows[i].wrapped = Some(wrapped);
-            layout.rows[i].display = display;
+            let r = &mut layout.rows[i];
+            r.wrapped = Some(shaped.wrapped);
+            r.display = shaped.display;
+            r.decor = shaped.decor;
+            r.tags = shaped.tags;
         }
     }
 
@@ -1230,6 +1550,7 @@ impl OrgEditor {
     }
 
     fn set_selection(&mut self, sel: Selection) {
+        self.cursor_placed = true;
         self.selected_range = sel.range();
         self.selection_reversed = sel.head < sel.anchor;
     }
@@ -1258,7 +1579,8 @@ impl OrgEditor {
     }
 
     fn cursor_in_table(&self) -> bool {
-        self.row_kind(self.row_for_offset(self.cursor_offset())) == RowKind::Table
+        self.row_kind(self.row_for_offset(self.cursor_offset()))
+            .is_table()
     }
 
     fn cursor_on_heading_line(&self) -> bool {
@@ -2009,6 +2331,25 @@ impl OrgEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // A heading's tag labels: edit the tags.
+        let tag_hit = self.layout.as_ref().and_then(|l| {
+            l.tag_hits
+                .iter()
+                .find(|(b, _)| b.contains(&event.position))
+                .cloned()
+        });
+        if let Some((bounds, start)) = tag_hit
+            && let Some(h) = self
+                .doc
+                .headings()
+                .iter()
+                .find(|h| h.range.start == start)
+                .cloned()
+            && aster_doc::meta::tags_range(&self.doc, &h).is_some()
+        {
+            self.open_tags_menu(start, popup::PopupAnchor::below(bounds), cx);
+            return true;
+        }
         let Some((i, col)) = self.hit_test(event.position, window) else {
             return false;
         };
@@ -2068,12 +2409,24 @@ impl OrgEditor {
                 return true;
             }
         }
+        // A date shown as a label ("Due Fri, Nov 27") stands in for its text: a click anywhere
+        // on it is on the date.
+        let label = r
+            .display
+            .segments
+            .iter()
+            .find(|s| s.replaced && s.disp.start <= col && col < s.disp.end)
+            .map(|s| s.buf.clone());
         let timestamp = self
             .doc
             .decorations()
             .iter()
             .find(|d| {
-                d.kind == DecoKind::Timestamp && d.range.start <= offset && offset < d.range.end
+                d.kind == DecoKind::Timestamp
+                    && ((d.range.start <= offset && offset < d.range.end)
+                        || label
+                            .as_ref()
+                            .is_some_and(|l| l.start <= d.range.start && d.range.end <= l.end))
             })
             .map(|d| d.range.clone());
         if let Some(range) = timestamp
@@ -2198,7 +2551,10 @@ impl OrgEditor {
         let row = self.row_for_offset(offset);
         let start = self.line_starts[row];
         if self.heading_level(row).is_some() {
-            self.open_heading_menu(start, event.position, cx);
+            // At the pointer, like other context menus.
+            let at =
+                popup::PopupAnchor::below(Bounds::new(event.position, gpui::size(px(0.), px(0.))));
+            self.open_heading_menu(start, at, cx);
         }
     }
 
@@ -2363,7 +2719,7 @@ impl OrgEditor {
 }
 
 impl Render for OrgEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // With Vim keys on, the mode is part of the key context ("OrgEditor && vim_normal").
         let mut key_context = gpui::KeyContext::new_with_defaults();
         key_context.add(KEY_CONTEXT);
@@ -2433,6 +2789,22 @@ impl Render for OrgEditor {
             EditorMode::Full => self
                 .vim_actions(base, cx)
                 .on_action(cx.listener(Self::toggle_done))
+                .on_action(
+                    cx.listener(|e, _: &Bold, _, cx| e.format_selection(Some(Emphasis::Bold), cx)),
+                )
+                .on_action(cx.listener(|e, _: &Italic, _, cx| {
+                    e.format_selection(Some(Emphasis::Italic), cx)
+                }))
+                .on_action(cx.listener(|e, _: &Underline, _, cx| {
+                    e.format_selection(Some(Emphasis::Underline), cx)
+                }))
+                .on_action(cx.listener(|e, _: &Strikethrough, _, cx| {
+                    e.format_selection(Some(Emphasis::Strike), cx)
+                }))
+                .on_action(cx.listener(|e, _: &InlineCode, _, cx| {
+                    e.format_selection(Some(Emphasis::Code), cx)
+                }))
+                .on_action(cx.listener(|e, _: &InsertLink, _, cx| e.format_selection(None, cx)))
                 .on_action(cx.listener(Self::cycle_todo_backward))
                 .on_action(cx.listener(Self::insert_heading))
                 .on_action(cx.listener(Self::promote_subtree))
@@ -2445,6 +2817,7 @@ impl Render for OrgEditor {
                 .on_action(cx.listener(Self::open_heading_menu_action))
                 .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
                 .children(self.render_popup(cx))
+                .children(self.render_format_bar(window, cx))
                 .on_action(cx.listener(Self::fold))
                 .on_action(cx.listener(Self::unfold))
                 .on_action(cx.listener(Self::fold_all))

@@ -7,10 +7,11 @@ use aster_doc::meta::{self, Planning};
 use aster_doc::{EditOrigin, Selection, Transaction, dates, ops};
 use chrono::{Datelike, Duration, NaiveDate};
 use gpui::{
-    AnyElement, Context, Entity, Focusable, MouseButton, Pixels, Point, SharedString, Subscription,
-    Window, anchored, deferred, div, prelude::*, px,
+    AnyElement, Bounds, Context, Entity, Focusable, MouseButton, Pixels, SharedString,
+    Subscription, Window, anchored, deferred, div, prelude::*, px,
 };
 
+use crate::calendar::{Calendar, add_months};
 use crate::{EditorEvent, OrgEditor};
 use aster_ui::ActiveTheme;
 use aster_ui::icons::{Icon, icon};
@@ -89,20 +90,20 @@ impl MenuItem {
 
 pub(crate) enum Popup {
     Menu {
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         title: Option<SharedString>,
         items: Vec<MenuItem>,
         selected: usize,
     },
     Date {
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         target: DateTarget,
         month: NaiveDate,
         selected: NaiveDate,
         clearable: bool,
     },
     TagInput {
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         heading: usize,
         input: Entity<OrgEditor>,
         _subscription: Subscription,
@@ -123,6 +124,50 @@ pub(crate) enum NavKey {
     Right,
     Enter,
     Escape,
+}
+
+/// Where a popup attaches to the text: a rectangle (usually a line of text) it opens next to.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct PopupAnchor {
+    pub bounds: Bounds<Pixels>,
+    /// Prefer opening above the rectangle (the formatting toolbar) rather than below it.
+    pub above: bool,
+}
+
+/// Space between a popup and the text it belongs to.
+const POPUP_GAP: f32 = 4.;
+
+impl PopupAnchor {
+    pub(crate) fn below(bounds: Bounds<Pixels>) -> Self {
+        Self {
+            bounds,
+            above: false,
+        }
+    }
+
+    pub(crate) fn above(bounds: Bounds<Pixels>) -> Self {
+        Self {
+            bounds,
+            above: true,
+        }
+    }
+
+    /// Position `a` on the preferred side, flipping to the other side of the text (never over
+    /// it) when the window has no room.
+    pub(crate) fn place(self, a: gpui::Anchored) -> gpui::Anchored {
+        let gap = px(POPUP_GAP);
+        let span = self.bounds.size.height + gap * 2.;
+        // GPUI flips around the anchor point, so anchor on the far side of the text and
+        // offset across it: the flipped position then lands just beyond the near side.
+        if self.above {
+            a.anchor(gpui::Corner::BottomLeft)
+                .position(self.bounds.bottom_left() + gpui::point(px(0.), gap))
+                .offset(gpui::point(px(0.), -span))
+        } else {
+            a.position(self.bounds.origin - gpui::point(px(0.), gap))
+                .offset(gpui::point(px(0.), span))
+        }
+    }
 }
 
 // ---- slash menu items -------------------------------------------------------------------
@@ -214,25 +259,19 @@ fn first_of_month(d: NaiveDate) -> NaiveDate {
     d.with_day(1).expect("day 1 exists")
 }
 
-fn add_months(d: NaiveDate, months: i32) -> NaiveDate {
-    let total = d.year() * 12 + d.month0() as i32 + months;
-    NaiveDate::from_ymd_opt(total.div_euclid(12), total.rem_euclid(12) as u32 + 1, 1)
-        .expect("valid month")
-}
-
 impl OrgEditor {
     // ---- opening ------------------------------------------------------------------------
 
-    /// Bottom-left corner of a text range, in window coordinates.
-    pub(crate) fn anchor_below(&self, range: Range<usize>) -> Point<Pixels> {
+    /// Where a popup for a text range goes: under its line, or above when there's no room.
+    pub(crate) fn anchor_below(&self, range: Range<usize>) -> PopupAnchor {
         self.bounds_for_offsets(range)
-            .map(|b| b.bottom_left() + gpui::point(px(0.), px(4.)))
+            .map(PopupAnchor::below)
             .unwrap_or_default()
     }
 
     fn open_menu(
         &mut self,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         title: Option<&str>,
         items: Vec<MenuItem>,
         cx: &mut Context<Self>,
@@ -247,12 +286,7 @@ impl OrgEditor {
         cx.notify();
     }
 
-    pub(crate) fn open_todo_menu(
-        &mut self,
-        h: usize,
-        anchor: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn open_todo_menu(&mut self, h: usize, anchor: PopupAnchor, cx: &mut Context<Self>) {
         let current = meta::heading(&self.doc, h).and_then(|h| h.todo.clone());
         let mut items: Vec<MenuItem> = meta::todo_states(&self.doc)
             .into_iter()
@@ -270,7 +304,7 @@ impl OrgEditor {
     pub(crate) fn open_priority_menu(
         &mut self,
         h: usize,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         cx: &mut Context<Self>,
     ) {
         let current = meta::heading(&self.doc, h)
@@ -290,12 +324,7 @@ impl OrgEditor {
         self.open_menu(anchor, Some("Priority"), items, cx);
     }
 
-    pub(crate) fn open_tags_menu(
-        &mut self,
-        h: usize,
-        anchor: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn open_tags_menu(&mut self, h: usize, anchor: PopupAnchor, cx: &mut Context<Self>) {
         let tags = meta::heading(&self.doc, h)
             .map(|h| h.tags.clone())
             .unwrap_or_default();
@@ -323,7 +352,7 @@ impl OrgEditor {
     pub(crate) fn open_heading_menu(
         &mut self,
         h: usize,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         cx: &mut Context<Self>,
     ) {
         let key = |s: &str| SharedString::from(s.to_string());
@@ -382,7 +411,7 @@ impl OrgEditor {
     pub(crate) fn open_date_picker(
         &mut self,
         target: DateTarget,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         cx: &mut Context<Self>,
     ) {
         let (initial, clearable) = match &target {
@@ -404,7 +433,7 @@ impl OrgEditor {
     fn open_tag_input(
         &mut self,
         h: usize,
-        anchor: Point<Pixels>,
+        anchor: PopupAnchor,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -796,7 +825,7 @@ impl OrgEditor {
             self.popup = None;
         }
         let popup = self.popup.as_ref()?;
-        let (anchor, body): (Point<Pixels>, AnyElement) = match popup {
+        let (anchor, body): (PopupAnchor, AnyElement) = match popup {
             Popup::Menu {
                 anchor,
                 title,
@@ -838,14 +867,9 @@ impl OrgEditor {
         };
         self.last_popup_anchor = anchor;
         Some(
-            deferred(
-                anchored()
-                    .position(anchor)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(body),
-            )
-            .with_priority(1)
-            .into_any_element(),
+            deferred(anchor.place(anchored()).child(body))
+                .with_priority(1)
+                .into_any_element(),
         )
     }
 
@@ -928,137 +952,47 @@ impl OrgEditor {
         clearable: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let today = dates::today();
-        let c = cx.theme().colors;
-        let title = month.format("%B %Y").to_string();
-        let lead = month.weekday().num_days_from_monday() as i64;
-        let grid_start = month - Duration::days(lead);
-        let nav = |id: &'static str, label: &'static str, delta: i32| {
-            div()
-                .id(id)
-                .px_2()
-                .rounded(aster_ui::RADIUS_CONTROL)
-                .cursor_pointer()
-                .hover(move |s| s.bg(c.subtle_secondary))
-                .child(label)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        if let Some(Popup::Date {
-                            month, selected, ..
-                        }) = this.popup.as_mut()
-                        {
-                            *month = add_months(*month, delta);
-                            *selected = *month;
-                        }
-                        cx.notify();
-                    }),
-                )
+        let this = cx.entity().downgrade();
+        let on_month = {
+            let this = this.clone();
+            move |delta: i32, _: &mut Window, cx: &mut gpui::App| {
+                this.update(cx, |this, cx| {
+                    if let Some(Popup::Date {
+                        month, selected, ..
+                    }) = this.popup.as_mut()
+                    {
+                        *month = add_months(*month, delta);
+                        *selected = *month;
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
         };
-        let header = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_1()
-            .child(nav("date-prev", "‹", -1))
-            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
-            .child(nav("date-next", "›", 1));
-        let weekdays = div()
-            .flex()
-            .children(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|d| {
-                div()
-                    .w(px(32.))
-                    .text_center()
-                    .text_size(px(11.))
-                    .text_color(c.text_tertiary)
-                    .child(d)
-            }));
-        let weeks = (0..6).map(|w| {
-            div().flex().children((0..7).map(|d| {
-                let day = grid_start + Duration::days(w * 7 + d);
-                let in_month = day.month() == month.month();
-                let is_selected = day == selected;
-                let is_today = day == today;
-                div()
-                    .id(("day", (w * 7 + d) as usize))
-                    .w(px(32.))
-                    .h(px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(aster_ui::RADIUS_CONTROL)
-                    .cursor_pointer()
-                    .text_size(px(13.))
-                    .text_color(if is_selected {
-                        c.text_on_accent
-                    } else if in_month {
-                        c.text_primary
-                    } else {
-                        c.text_disabled
-                    })
-                    .when(is_selected, |s| s.bg(c.accent))
-                    .when(is_today && !is_selected, |s| {
-                        s.border_1().border_color(c.accent)
-                    })
-                    .when(!is_selected, |s| s.hover(move |s| s.bg(c.subtle_secondary)))
-                    .child(day.day().to_string())
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.pick_date(day, cx);
-                        }),
-                    )
-            }))
+        let on_pick = {
+            let this = this.clone();
+            move |d: NaiveDate, _: &mut Window, cx: &mut gpui::App| {
+                this.update(cx, |this, cx| this.pick_date(d, cx)).ok();
+            }
+        };
+        let on_clear = clearable.then(|| {
+            std::rc::Rc::new(move |_: (), _: &mut Window, cx: &mut gpui::App| {
+                this.update(cx, |this, cx| this.clear_date(cx)).ok();
+            }) as std::rc::Rc<dyn Fn((), &mut Window, &mut gpui::App)>
         });
-        let footer = div()
-            .flex()
-            .justify_between()
-            .pt_1()
-            .child(
-                div()
-                    .id("date-today")
-                    .px_2()
-                    .rounded(aster_ui::RADIUS_CONTROL)
-                    .cursor_pointer()
-                    .text_color(c.accent)
-                    .hover(move |s| s.bg(c.subtle_secondary))
-                    .child("Today")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.pick_date(today, cx);
-                        }),
-                    ),
-            )
-            .when(clearable, |f| {
-                f.child(
-                    div()
-                        .id("date-clear")
-                        .px_2()
-                        .rounded(aster_ui::RADIUS_CONTROL)
-                        .cursor_pointer()
-                        .text_color(c.critical)
-                        .hover(move |s| s.bg(c.subtle_secondary))
-                        .child("Clear")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.clear_date(cx);
-                            }),
-                        ),
-                )
-            });
         panel(cx)
             .p_2()
-            .text_size(px(14.))
-            .child(header)
-            .child(weekdays)
-            .children(weeks)
-            .child(footer)
+            .child(
+                Calendar {
+                    month,
+                    selected: Some(selected),
+                    today: dates::today(),
+                    on_month: std::rc::Rc::new(on_month),
+                    on_pick: std::rc::Rc::new(on_pick),
+                    on_clear,
+                }
+                .render(cx),
+            )
             .into_any_element()
     }
 }

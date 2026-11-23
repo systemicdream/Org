@@ -3,9 +3,10 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use aster_ui::components::ButtonKind;
 use aster_ui::icons::{Icon, icon};
 use aster_ui::{ActiveTheme, components, ramp};
-use gpui::{Context, MouseButton, SharedString, div, prelude::*, px};
+use gpui::{Context, MouseButton, div, prelude::*, px};
 
 use crate::agenda_view::Mode;
 use crate::file_actions::TreeTarget;
@@ -91,6 +92,11 @@ pub fn build_tree(
     out
 }
 
+/// The notes folder's inbox: `inbox.org` at its top level, where captures go by default.
+pub(crate) fn is_inbox(rel: &str) -> bool {
+    rel.eq_ignore_ascii_case("inbox.org")
+}
+
 fn view_row(
     id: &'static str,
     glyph: Icon,
@@ -115,6 +121,61 @@ fn view_row(
 }
 
 impl Workspace {
+    /// The sidebar before a notes folder is open (e.g. while looking at the sample): what it
+    /// will hold, and how to get there.
+    pub(crate) fn render_folderless_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = cx.theme().colors;
+        div()
+            .id("sidebar")
+            .w(px(260.))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .px_4()
+            .text_size(ramp::BODY.size)
+            .line_height(ramp::BODY.line_height)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("No notes folder yet"),
+            )
+            .child(
+                div().text_color(c.text_secondary).child(
+                    "Choose a folder for your notes to see its files, tags and agenda here.",
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        components::button(
+                            "sidebar-create",
+                            "Create a notes folder…",
+                            ButtonKind::Accent,
+                            cx,
+                        )
+                        .on_click(
+                            cx.listener(|ws, _, window, cx| ws.create_notes_folder(window, cx)),
+                        ),
+                    )
+                    .child(
+                        components::button(
+                            "sidebar-open",
+                            "Open an existing folder…",
+                            ButtonKind::Standard,
+                            cx,
+                        )
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(crate::OpenFolder), cx)
+                        }),
+                    ),
+            )
+    }
+
     /// The navigation pane (docs/DESIGN.md §7, §11): views, the file tree and tags, on the base
     /// layer, with Fluent list rows and the accent selection indicator.
     pub(crate) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -139,20 +200,58 @@ impl Workspace {
             )
             .into_any_element(),
         ];
+        let header = self
+            .root
+            .as_ref()
+            .map(|r| self.render_notebook_header(r, cx));
         let colors = cx.theme().colors;
+        let current = self.path.clone().filter(|_| self.editor_visible());
+        // The inbox (where captures go) is a view of its own rather than one of the notes.
+        let inbox = self
+            .index
+            .read(cx)
+            .files()
+            .find(|f| is_inbox(&f.rel))
+            .map(|f| {
+                let open = f
+                    .headings
+                    .iter()
+                    .filter(|h| h.level == 1 && !h.done)
+                    .count();
+                (f.path.clone(), open)
+            });
+        let inbox_row = inbox.map(|(path, open)| {
+            let selected = current.as_ref() == Some(&path);
+            components::list_item("view-inbox", selected, cx)
+                .gap_3()
+                .child(icon(
+                    Icon::Inbox,
+                    px(16.),
+                    if selected {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    },
+                ))
+                .child(div().flex_1().child("Inbox"))
+                .when(open > 0, |d| {
+                    d.child(components::caption(open.to_string(), cx))
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |ws, _, window, cx| ws.open_path(path.clone(), window, cx)),
+                )
+                .into_any_element()
+        });
         let index = self.index.read(cx);
         let files: Vec<(String, PathBuf, bool)> = index
             .files()
+            .filter(|f| !is_inbox(&f.rel))
             .map(|f| (f.rel.clone(), f.path.clone(), f.conflict))
             .collect();
         let rows = build_tree(&files, &index.dirs(), &self.expanded);
+        let empty = rows.is_empty();
         let tags = index.tags();
-        let root_name = self
-            .root
-            .as_ref()
-            .and_then(|r| r.file_name())
-            .map_or("Notes".to_string(), |n| n.to_string_lossy().into_owned());
-        let current = self.path.clone().filter(|_| self.editor_visible());
         let root = self.root.clone();
 
         let file_rows: Vec<_> = rows
@@ -203,15 +302,18 @@ impl Workspace {
                     _ => TreeTarget::Root,
                 };
                 components::list_item(("tree-row", i), selected, cx)
-                    .pl(px(12. + 16. * row.depth as f32))
+                    .pl(px(12. + 18. * row.depth as f32))
                     .text_color(color)
                     .gap_1p5()
-                    .child(
-                        div()
-                            .w(px(12.))
-                            .flex_shrink_0()
-                            .children(chevron.map(|c| icon(c, px(12.), colors.text_secondary))),
-                    )
+                    // Only folders have a chevron; files line up with the rows above (and,
+                    // inside a folder, with its icon).
+                    .children(chevron.map(|c| {
+                        div().w(px(12.)).flex_shrink_0().child(icon(
+                            c,
+                            px(12.),
+                            colors.text_secondary,
+                        ))
+                    }))
                     .child(icon(
                         kind_icon,
                         px(16.),
@@ -274,7 +376,6 @@ impl Workspace {
             })
             .collect();
 
-        let empty = index.is_empty() && index.dirs().is_empty();
         let has_tags = !tags.is_empty();
         div()
             .id("sidebar")
@@ -285,15 +386,7 @@ impl Workspace {
             .flex_col()
             .text_size(ramp::BODY.size)
             .line_height(ramp::BODY.line_height)
-            .child(
-                div()
-                    .px_4()
-                    .pb_1()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(SharedString::from(root_name)),
-            )
+            .children(header)
             .child(
                 div()
                     .id("sidebar-scroll")
@@ -302,6 +395,7 @@ impl Workspace {
                     .px_1()
                     .pb_4()
                     .child(components::section_header("Views", cx))
+                    .children(inbox_row)
                     .children(views)
                     .child(
                         div()
