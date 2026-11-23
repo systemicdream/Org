@@ -202,6 +202,8 @@ impl Render for Picker {
         let more = self.items.len().saturating_sub(MAX_ROWS);
         components::dialog(cx)
             .w(px(600.))
+            // Clicking anywhere else closes it (as Escape does).
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Dismissed)))
             .p_2()
             .flex()
             .flex_col()

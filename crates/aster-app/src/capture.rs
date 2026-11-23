@@ -81,6 +81,13 @@ impl Render for CaptureDialog {
             .collect();
         components::dialog(cx)
             .w(px(560.))
+            // Clicking elsewhere closes it, unless something's been typed (so a stray click
+            // doesn't lose it).
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if this.input.read(cx).text().trim().is_empty() {
+                    cx.emit(CaptureEvent::Dismissed);
+                }
+            }))
             .p_4()
             .flex()
             .flex_col()
@@ -100,7 +107,14 @@ impl Render for CaptureDialog {
                             .child("Capture"),
                     )
                     .flex_wrap()
-                    .children(tabs),
+                    .children(tabs)
+                    .child(div().flex_1())
+                    .child(
+                        components::icon_button("capture-close", Icon::Dismiss, cx)
+                            .size(px(28.))
+                            .tooltip(|window, cx| components::Tooltip::text("Cancel", window, cx))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(CaptureEvent::Dismissed))),
+                    ),
             )
             .child(components::text_box(true, cx).child(self.input.clone()))
             .child(components::caption(
