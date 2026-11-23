@@ -9,7 +9,9 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [docs/decisions](docs/decis
 
 ## Status
 
-Phase 0 (spikes). Usable for poking at, not for real notes yet.
+**0.1.0, early development.** Aster works for everyday notes, but expect rough edges, and keep
+a backup of notes you care about. Versions stay at 0.x until it has seen real use; see
+[CHANGELOG.md](CHANGELOG.md) for what's in each release.
 
 ## Development
 
@@ -36,15 +38,39 @@ Platform notes:
 
 ## Installing
 
+Download the package for your system from the
+[latest release](https://github.com/systemicdream/Aster/releases/latest):
+
+| System | Package | Install |
+|---|---|---|
+| macOS 11+ (Apple silicon, Intel) | `Aster-<version>-macos-universal.dmg` | Drag Aster to Applications (first launch: see below) |
+| Linux (any distribution) | `Aster-<version>-x86_64.flatpak` | `flatpak install --user Aster-<version>-x86_64.flatpak` |
+| Debian 12+, Ubuntu 22.04+ | `aster_<version>_amd64.deb` | `sudo apt install ./aster_<version>_amd64.deb` |
+| Fedora | `aster-<version>-1.x86_64.rpm` | `sudo dnf install ./aster-<version>-1.x86_64.rpm` |
+| Other Linux | `aster-<version>-linux-x86_64.tar.gz` | Extract, then `./install.sh` |
+
+**macOS, first launch:** Aster isn't notarized by Apple yet, so macOS stops it the first time.
+Open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+**Linux:** Aster needs a Wayland session (X11 isn't supported). The Flatpak is the
+recommended package; it isn't on Flathub yet, so it doesn't update by itself.
+
+Aster checks GitHub once a day for a new version and tells you when there is one (Settings →
+About can turn this off; nothing about you or your notes is sent). If Aster crashes, it keeps a
+report on your computer and offers to open a GitHub issue with it the next time; nothing is
+sent unless you choose to.
+
+### From source
+
 ```sh
 scripts/bundle-macos.sh     # macOS: builds target/release/Aster.app (drag it to /Applications)
 scripts/install-linux.sh    # Linux: installs to ~/.local/bin with a launcher entry and icon
 ```
 
-The macOS app is ad-hoc signed, not notarized: the first time, right-click it and choose Open.
 On Linux the window's Wayland app id (`io.github.systemicdream.Aster`) matches the desktop entry,
 which is how the compositor finds the icon. The icon artwork lives in
 `assets/branding/aster-icon.png`; `scripts/make-icons.py` regenerates every size from it.
+Building release packages is described in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Keys
 

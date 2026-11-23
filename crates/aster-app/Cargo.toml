@@ -24,6 +24,11 @@ serde_json.workspace = true
 futures.workspace = true
 aster-ui.workspace = true
 trash.workspace = true
+ureq.workspace = true
+
+# Flatpak: move files to the trash through the desktop portal (the same ashpd GPUI uses).
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
 
 # The Dock icon when Aster runs outside an .app bundle (e.g. `cargo run`).
 [target.'cfg(target_os = "macos")'.dependencies]

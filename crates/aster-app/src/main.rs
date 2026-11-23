@@ -11,7 +11,9 @@ mod file_actions;
 mod files;
 mod keymap;
 mod name_dialog;
+mod notices;
 mod picker;
+mod release;
 mod session;
 mod settings;
 mod settings_view;
@@ -162,6 +164,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    release::install_panic_hook();
     let (file, root) = startup_target();
     let text = match &file {
         Some(p) if p.exists() => read_org(p)?,
@@ -202,6 +205,7 @@ fn main() -> anyhow::Result<()> {
             window
                 .update(cx, |ws, window, cx| {
                     ws.focus_main(window, cx);
+                    ws.startup_notices(cx);
                     cx.activate(true);
                 })
                 .ok();

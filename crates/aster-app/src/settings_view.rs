@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::keymap::{EMACS_SUMMARY, VIM_SUMMARY};
+use crate::release;
 use crate::settings::{
     self, AppearancePref, CaptureKind, CaptureTemplate, FONT_SIZE_DEFAULT, FONT_SIZE_MAX,
     FONT_SIZE_MIN, Keymap, Settings,
@@ -28,6 +29,8 @@ pub enum SettingsEvent {
     Close,
     /// Saving the settings file failed.
     Error(String),
+    /// "Check now" in About.
+    CheckForUpdates,
 }
 
 /// One capture template's editable fields.
@@ -662,6 +665,37 @@ impl Render for SettingsView {
                     })),
             );
 
+        let updates = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                components::button("update-check", "Check now", ButtonKind::Standard, cx)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CheckForUpdates))),
+            )
+            .child(if settings.check_for_updates {
+                "On"
+            } else {
+                "Off"
+            })
+            .child(
+                components::toggle_switch("update-toggle", settings.check_for_updates, true, cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.change(cx, |s| s.check_for_updates = !s.check_for_updates)
+                    })),
+            );
+        let about = div()
+            .flex()
+            .gap_2()
+            .child(
+                components::button("about-releases", "Release notes", ButtonKind::Standard, cx)
+                    .on_click(|_, _, cx| cx.open_url(release::RELEASES_URL)),
+            )
+            .child(
+                components::button("about-issue", "Report a problem", ButtonKind::Standard, cx)
+                    .on_click(|_, _, cx| cx.open_url(&release::issue_url())),
+            );
+
         div()
             .id("settings")
             .key_context(CONTEXT)
@@ -749,7 +783,24 @@ impl Render for SettingsView {
                         .pb_2(),
                     )
                     .children(templates)
-                    .child(template_buttons),
+                    .child(template_buttons)
+                    .child(group_header("About"))
+                    .child(Self::card(
+                        Icon::Info,
+                        concat!("Aster ", env!("CARGO_PKG_VERSION")),
+                        "An early release: expect rough edges. Your notes are plain Org \
+                         files, so they're safe whatever happens to the app. MIT licensed.",
+                        about,
+                        cx,
+                    ))
+                    .child(Self::card(
+                        Icon::Sync,
+                        "Check for updates",
+                        "Once a day, ask GitHub if there's a new version. Nothing about you \
+                         or your notes is sent.",
+                        updates,
+                        cx,
+                    )),
             )
             .into_any_element()
     }

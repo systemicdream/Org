@@ -78,6 +78,8 @@ pub struct Workspace {
     sample: bool,
     /// Focus for the window itself, so shortcuts work when no note is open.
     focus_handle: gpui::FocusHandle,
+    /// Update and crash notices; the first shows at the top of the content.
+    pub(crate) notices: Vec<crate::notices::Notice>,
 }
 
 impl Workspace {
@@ -116,6 +118,7 @@ impl Workspace {
             name_dialog: None,
             sample: false,
             focus_handle: cx.focus_handle(),
+            notices: Vec::new(),
         };
         window.set_window_title(&ws.title());
         // Follow the system's light/dark setting.
@@ -421,6 +424,7 @@ impl Workspace {
                     |this, _, event: &SettingsEvent, window, cx| match event {
                         SettingsEvent::Close => this.show_editor(window, cx),
                         SettingsEvent::Error(msg) => this.toast(msg.clone(), true, cx),
+                        SettingsEvent::CheckForUpdates => this.check_for_updates(true, cx),
                     },
                 );
                 self.settings = Some((view.clone(), sub));
@@ -1660,6 +1664,7 @@ impl Render for Workspace {
                             .when(has_sidebar, |d| {
                                 d.border_l_1().rounded_tl(aster_ui::RADIUS_OVERLAY)
                             })
+                            .children(self.render_notice(cx))
                             .children(
                                 self.find_bar
                                     .clone()

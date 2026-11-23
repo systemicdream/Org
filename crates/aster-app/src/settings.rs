@@ -142,6 +142,8 @@ pub struct Settings {
     pub transparency: bool,
     pub keymap: Keymap,
     pub capture_templates: Vec<CaptureTemplate>,
+    /// Ask GitHub Releases once a day whether a newer Aster is out.
+    pub check_for_updates: bool,
 }
 
 impl Default for Settings {
@@ -153,6 +155,7 @@ impl Default for Settings {
             transparency: true,
             keymap: Keymap::Standard,
             capture_templates: default_templates(),
+            check_for_updates: true,
         }
     }
 }

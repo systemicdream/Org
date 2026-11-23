@@ -1,0 +1,126 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds every package and drafts a GitHub Release with them (see
+# docs/RELEASING.md). Pull requests that touch packaging, and running it by hand (Actions →
+# Release → Run workflow), only build the packages, as artifacts, to try them out.
+
+on:
+  push:
+    tags: ["v*"]
+  # Changes to packaging build every package (without releasing) to catch breakage early.
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "scripts/bundle-macos.sh"
+      - "scripts/package-*.sh"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read the version (and check it matches the tag)
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the version in Cargo.toml ($version)"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]] && ! grep -q "^## \[$version\] - [0-9]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated entry for $version"
+            exit 1
+          fi
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/bundle-macos.sh --universal --dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: target/dist/*
+
+  linux:
+    needs: version
+    # The oldest supported Ubuntu: the binary needs at least the build machine's glibc (2.35).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev \
+            libfreetype-dev libvulkan-dev pkg-config rpm
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/dist/*
+
+  flatpak:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          # Ubuntu 24.04 blocks the unprivileged user namespaces flatpak-builder's sandbox needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: scripts/package-flatpak.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: target/dist/*
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, macos, linux, flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          cat docs/release-footer.md >> notes.md
+          cat notes.md
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        # A draft: check it over, then publish it on GitHub. Not marked as a pre-release, so
+        # Aster's update check (which asks for the latest release) finds it.
+        run: |
+          gh release create "v$VERSION" dist/* --draft --verify-tag \
+            --title "Aster $VERSION" --notes-file notes.md

@@ -44,6 +44,8 @@ dirs = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
+# Update checks against GitHub Releases (rustls; no system OpenSSL).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # Lockfile pins (no manifest entry needed, but don't `cargo update` past them blindly):
 # - libc 0.2.189 / mio 1.2.4: libc 0.2.190 removed `ENOATTR` on Linux, which breaks

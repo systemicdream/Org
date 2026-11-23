@@ -226,7 +226,7 @@ Because users pick their own sync tool, Aster must be robust to external changes
 | **5. Workspace** | Many files | Folder workspace, file tree, quick switcher, full-text search, tag browser, `id:`/file links, external-change handling. |
 | **6. Organization** | The Org workflow | Agenda views, capture (with global hotkey), refile picker, archive. |
 | **7. Onboarding & polish** | Ready for newcomers | Welcome notebook, templates, tips, settings UI, themes (light/dark), Emacs keymap option. |
-| **8. Ship 1.0** | Distribution | Signed/notarized builds, installers, auto-update, crash reporting, docs site. |
+| **8. First release (0.1.0)** | Distribution | Versioned releases from CI: macOS `.dmg`, Flatpak, `.deb`, `.rpm`; update notifications, local crash reports, docs site. 1.0 comes later, once Aster has been used in the wild. |
 
 Phases 2–4 are where most of the effort lands.
 
@@ -369,6 +369,29 @@ helper), configurable capture templates and targets, clocking/effort sums in the
 - [x] App icon: macOS `.icns` and `.app` bundle script, Linux desktop entry and hicolor icons
       with an install script, Dock icon for unbundled runs, Wayland app id
 - [x] Hands-on test on macOS and Linux
+
+### Phase 8 task list
+
+Aster stays on 0.x while in early development; the first release is **0.1.0**.
+
+- [x] Versioning: SemVer from the workspace version, `CHANGELOG.md`, release steps in
+      [RELEASING.md](RELEASING.md), version and links in Settings → About
+- [ ] Release workflow on `v*` tags: builds every package, `SHA256SUMS`, and a draft GitHub
+      Release with the changelog entry
+- [x] macOS: universal (Apple silicon + Intel) `.app` in a `.dmg`, ad-hoc signed (no Apple
+      Developer account yet: not notarized), with first-launch instructions
+- [x] Linux: Flatpak as the main package (manifest + AppStream metainfo; a `.flatpak` bundle
+      on GitHub Releases, not on Flathub for now), plus `.deb` (Debian/Ubuntu), `.rpm`
+      (Fedora) and a tarball
+- [x] Update notifications: check GitHub Releases at most once a day (can be turned off in
+      Settings) and offer a link to the new version; no in-place updater
+- [x] Crash reports: a panic writes a local report; the next launch offers to open a prefilled
+      GitHub issue. Nothing is sent automatically
+- [ ] Docs site on GitHub Pages: install, getting started, Org basics, keymaps, syncing
+- [x] README: install instructions per platform
+- [ ] Hands-on test: packages on macOS, Fedora/Nobara (Flatpak, `.rpm`) and Debian/Ubuntu
+      (`.deb`); Settings, keymaps and file management on Linux; a GNOME check
+- [ ] Tag and publish v0.1.0
 
 ---
 
