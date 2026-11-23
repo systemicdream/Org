@@ -92,6 +92,11 @@ pub fn build_tree(
     out
 }
 
+/// The notes folder's inbox: `inbox.org` at its top level, where captures go by default.
+pub(crate) fn is_inbox(rel: &str) -> bool {
+    rel.eq_ignore_ascii_case("inbox.org")
+}
+
 fn view_row(
     id: &'static str,
     glyph: Icon,
@@ -200,14 +205,53 @@ impl Workspace {
             .as_ref()
             .map(|r| self.render_notebook_header(r, cx));
         let colors = cx.theme().colors;
+        let current = self.path.clone().filter(|_| self.editor_visible());
+        // The inbox (where captures go) is a view of its own rather than one of the notes.
+        let inbox = self
+            .index
+            .read(cx)
+            .files()
+            .find(|f| is_inbox(&f.rel))
+            .map(|f| {
+                let open = f
+                    .headings
+                    .iter()
+                    .filter(|h| h.level == 1 && !h.done)
+                    .count();
+                (f.path.clone(), open)
+            });
+        let inbox_row = inbox.map(|(path, open)| {
+            let selected = current.as_ref() == Some(&path);
+            components::list_item("view-inbox", selected, cx)
+                .gap_3()
+                .child(icon(
+                    Icon::Inbox,
+                    px(16.),
+                    if selected {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    },
+                ))
+                .child(div().flex_1().child("Inbox"))
+                .when(open > 0, |d| {
+                    d.child(components::caption(open.to_string(), cx))
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |ws, _, window, cx| ws.open_path(path.clone(), window, cx)),
+                )
+                .into_any_element()
+        });
         let index = self.index.read(cx);
         let files: Vec<(String, PathBuf, bool)> = index
             .files()
+            .filter(|f| !is_inbox(&f.rel))
             .map(|f| (f.rel.clone(), f.path.clone(), f.conflict))
             .collect();
         let rows = build_tree(&files, &index.dirs(), &self.expanded);
+        let empty = rows.is_empty();
         let tags = index.tags();
-        let current = self.path.clone().filter(|_| self.editor_visible());
         let root = self.root.clone();
 
         let file_rows: Vec<_> = rows
@@ -332,7 +376,6 @@ impl Workspace {
             })
             .collect();
 
-        let empty = index.is_empty() && index.dirs().is_empty();
         let has_tags = !tags.is_empty();
         div()
             .id("sidebar")
@@ -352,6 +395,7 @@ impl Workspace {
                     .px_1()
                     .pb_4()
                     .child(components::section_header("Views", cx))
+                    .children(inbox_row)
                     .children(views)
                     .child(
                         div()

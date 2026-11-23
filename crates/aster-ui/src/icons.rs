@@ -47,6 +47,7 @@ pub enum Icon {
     Schedule,
     Deadline,
     Notebook,
+    Inbox,
     DocumentAdd,
     FolderAdd,
     Rename,
@@ -106,6 +107,7 @@ impl Icon {
             Icon::Schedule => "icons/calendar_clock.svg",
             Icon::Deadline => "icons/clock_alarm.svg",
             Icon::Notebook => "icons/notebook.svg",
+            Icon::Inbox => "icons/mail_inbox.svg",
             Icon::DocumentAdd => "icons/document_add.svg",
             Icon::FolderAdd => "icons/folder_add.svg",
             Icon::Rename => "icons/rename.svg",
@@ -263,6 +265,10 @@ const ICONS: &[(&str, &[u8])] = &[
     (
         "icons/notebook.svg",
         include_bytes!("../assets/icons/notebook.svg"),
+    ),
+    (
+        "icons/mail_inbox.svg",
+        include_bytes!("../assets/icons/mail_inbox.svg"),
     ),
     (
         "icons/document_add.svg",
