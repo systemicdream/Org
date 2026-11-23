@@ -20,6 +20,7 @@ mod settings_view;
 mod sidebar;
 mod watch;
 mod welcome;
+mod window_blur;
 mod workspace;
 
 use std::path::PathBuf;
@@ -209,6 +210,7 @@ fn main() -> anyhow::Result<()> {
                     cx.activate(true);
                 })
                 .ok();
+            window_blur::sync(window_background == gpui::WindowBackgroundAppearance::Blurred);
         });
     Ok(())
 }

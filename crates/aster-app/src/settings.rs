@@ -275,6 +275,7 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut Settings)) -> anyhow::Result<()>
                 })
                 .ok();
         }
+        crate::window_blur::sync(settings.translucent());
     }
     let result = settings.save();
     cx.set_global(settings);
